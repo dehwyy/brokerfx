@@ -16,12 +16,12 @@ type Opts struct {
 }
 
 type Producer struct {
-	jetstream.JetStream
+	js jetstream.JetStream
 }
 
 func New(opts Opts) *Producer {
 	return &Producer{
-		JetStream: opts.JetStream,
+		js: opts.JetStream,
 	}
 }
 
@@ -34,7 +34,7 @@ func (p *Producer) Produce(
 		return err
 	}
 
-	ack, err := p.PublishAsync(
+	ack, err := p.js.PublishAsync(
 		event.Subject(),
 		data,
 	)

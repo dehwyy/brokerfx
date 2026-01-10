@@ -15,7 +15,7 @@ type Opts struct {
 	ConsumerOptsBuilder *consumeroptsbuilder.ConsumerOptsBuilder
 	Stream              *stream.Stream
 
-	HandlerFunc             func(ctx context.Context, msg *jetstream.Msg) error
+	HandlerFunc             func(ctx context.Context, msg jetstream.Msg) error
 	BeforeHandlerMiddleware []middleware.Middleware
 	AfterHandlerMiddleware  []middleware.Middleware
 }
@@ -49,7 +49,7 @@ func New(opts Opts) *Consumer {
 				}
 			}
 
-			if err = opts.HandlerFunc(ctx, &msg); err != nil {
+			if err = opts.HandlerFunc(ctx, msg); err != nil {
 				log.Error().Err(err).Msg("error handling message")
 			}
 

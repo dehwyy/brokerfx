@@ -4,6 +4,7 @@ import (
 	"sync"
 
 	"github.com/nats-io/nats.go/jetstream"
+	"github.com/samber/lo"
 )
 
 type Drainer struct {
@@ -16,8 +17,16 @@ func NewDrainer() *Drainer {
 	}
 }
 
-func (d *Drainer) Append(consumerCtx jetstream.ConsumeContext) {
-	d.consumerCtxs = append(d.consumerCtxs, consumerCtx)
+func (d *Drainer) Append(consumers ...Consumer) {
+	d.consumerCtxs = append(
+		d.consumerCtxs,
+		lo.Map(
+			consumers,
+			func(consumer Consumer, _ int) jetstream.ConsumeContext {
+				return consumer.consumeCtx
+			},
+		)...,
+	)
 }
 
 func (d *Drainer) Drain() {

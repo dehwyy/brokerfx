@@ -15,7 +15,6 @@ func NewDefault() *ConsumerOptsBuilder {
 		config: jetstream.ConsumerConfig{
 			AckPolicy:     jetstream.AckExplicitPolicy,
 			AckWait:       10 * time.Second,
-			MaxDeliver:    2,
 			DeliverPolicy: jetstream.DeliverAllPolicy,
 		},
 	}

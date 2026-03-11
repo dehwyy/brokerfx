@@ -18,7 +18,11 @@ func NewConnBuilder() *ConnBuilder {
 }
 
 func (b *ConnBuilder) Build() []nats.Option {
-	return b.opts
+	return append(
+		b.opts,
+		nats.PingInterval(20*time.Second),
+		nats.MaxPingsOutstanding(3),
+	)
 }
 
 func (b *ConnBuilder) WithTLS(

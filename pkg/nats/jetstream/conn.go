@@ -12,11 +12,11 @@ type Opts struct {
 	Conn *nats.Conn
 }
 
-func New(opts Opts) jetstream.JetStream {
+func New(opts Opts) (jetstream.JetStream, error) {
 	js, err := jetstream.New(opts.Conn)
 	if err != nil {
-		panic(err)
+		return nil, err
 	}
 
-	return js
+	return js, nil
 }

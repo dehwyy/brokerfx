@@ -25,19 +25,20 @@ type Consumer struct {
 	consumeCtx jetstream.ConsumeContext
 }
 
-func New(opts Opts) *Consumer {
+func New(opts Opts) (*Consumer, error) {
 	consumer, err := opts.JetStream.CreateOrUpdateConsumer(
 		context.Background(),
 		opts.Stream.Name(),
 		opts.ConsumerOptsBuilder.Build(),
 	)
 	if err != nil {
-		panic(err)
+		return nil, err
 	}
 
 	consumeCtx, err := consumer.Consume(
 		func(msg jetstream.Msg) {
 			go func() {
+				log.Debug().Any("subject", msg.Subject()).Msg("nats message received")
 				if r := recover(); r != nil {
 					log.Error().Msgf("panic: %v", r)
 				}
@@ -77,5 +78,5 @@ func New(opts Opts) *Consumer {
 
 	return &Consumer{
 		consumeCtx: consumeCtx,
-	}
+	}, nil
 }

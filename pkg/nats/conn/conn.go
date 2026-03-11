@@ -37,6 +37,7 @@ func New(opts Opts) func(SecretsProvider) (*nc.Conn, error) {
 
 		// Build connection options
 		connOptsBuilder := connbuilder.NewConnBuilder()
+
 		if opts.EnabledTLS {
 			connOptsBuilder.WithTLS(opts.CertFile, opts.KeyFile, opts.CAFile)
 		}
@@ -69,7 +70,7 @@ func New(opts Opts) func(SecretsProvider) (*nc.Conn, error) {
 			panic(err)
 		}
 
-		log.Info().Dur("RTT", tt).Msg("RoundTripTime received")
+		log.Info().Dur("RTT", tt).Any("params", opts).Msg("RoundTripTime received")
 		return conn, nil
 	}
 }

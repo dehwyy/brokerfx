@@ -16,16 +16,16 @@ type Stream struct {
 	stream jetstream.Stream
 }
 
-func New(opts Opts) *Stream {
+func New(opts Opts) (*Stream, error) {
 	stream, err := opts.JetStream.CreateOrUpdateStream(
 		context.Background(),
 		opts.StreamOptsBuilder.Build(),
 	)
 	if err != nil {
-		panic(err)
+		return nil, err
 	}
 
-	return &Stream{stream}
+	return &Stream{stream}, nil
 }
 
 func (s *Stream) Name() string {

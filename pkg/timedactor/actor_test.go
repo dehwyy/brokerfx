@@ -33,6 +33,7 @@ type mockKV struct {
 	jetstream.KeyValue
 	putFn      func(ctx context.Context, key string, value []byte) (uint64, error)
 	getFn      func(ctx context.Context, key string) (jetstream.KeyValueEntry, error)
+	updateFn   func(ctx context.Context, key string, value []byte, last uint64) (uint64, error)
 	deleteFn   func(ctx context.Context, key string, opts ...jetstream.KVDeleteOpt) error
 	watchFn    func(ctx context.Context, keys string, opts ...jetstream.WatchOpt) (jetstream.KeyWatcher, error)
 	listKeysFn func(ctx context.Context, opts ...jetstream.WatchOpt) (jetstream.KeyLister, error)
@@ -43,6 +44,9 @@ func (m *mockKV) Put(ctx context.Context, key string, val []byte) (uint64, error
 }
 func (m *mockKV) Get(ctx context.Context, key string) (jetstream.KeyValueEntry, error) {
 	return m.getFn(ctx, key)
+}
+func (m *mockKV) Update(ctx context.Context, key string, value []byte, last uint64) (uint64, error) {
+	return m.updateFn(ctx, key, value, last)
 }
 func (m *mockKV) Delete(ctx context.Context, key string, opts ...jetstream.KVDeleteOpt) error {
 	return m.deleteFn(ctx, key, opts...)
@@ -99,8 +103,9 @@ func newTestActor(kv jetstream.KeyValue) (*TimedActor, context.CancelFunc) {
 		kv:     kv,
 		logger: zerolog.Nop(),
 		config: Config{
-			BucketName:    "test-bucket",
-			CheckInterval: 1 * time.Hour, // effectively disable rescan ticker
+			BucketName:      "test-bucket",
+			CheckInterval:   1 * time.Hour, // effectively disable rescan ticker
+			MaxHoldDuration: 10 * time.Minute,
 		},
 		timers: make(map[string]*time.Timer),
 		ctx:    ctx,
@@ -688,5 +693,366 @@ func TestStop_WaitsForGoroutines(t *testing.T) {
 		// Stop returned — goroutines drained successfully.
 	case <-time.After(3 * time.Second):
 		t.Fatal("Stop did not return in time — goroutines not drained")
+	}
+}
+
+// ===========================================================================
+// Tests: Hold (distributed via KV CAS)
+// ===========================================================================
+
+func TestHold_CASUpdateBumpsRevision(t *testing.T) {
+	// Hold should do a CAS update that pushes expiry far into the future.
+	originalExpiry := time.Now().Add(5 * time.Minute)
+	var updatedValue []byte
+	var updatedWithRev uint64
+
+	kv := &mockKV{
+		getFn: func(_ context.Context, key string) (jetstream.KeyValueEntry, error) {
+			return &mockEntry{
+				key: key, value: marshalTime(originalExpiry),
+				revision: 1, operation: jetstream.KeyValuePut,
+			}, nil
+		},
+		updateFn: func(_ context.Context, _ string, value []byte, last uint64) (uint64, error) {
+			updatedValue = value
+			updatedWithRev = last
+			return 2, nil // new rev after CAS update
+		},
+	}
+	actor, cancel := newTestActor(kv)
+	defer cancel()
+
+	holdCtx, holdCancel := context.WithCancel(context.Background())
+	defer holdCancel()
+
+	err := actor.Hold(holdCtx, "key")
+	if err != nil {
+		t.Fatalf("Hold failed: %v", err)
+	}
+
+	// Verify CAS was called with the original revision.
+	if updatedWithRev != 1 {
+		t.Errorf("CAS update used rev=%d, want 1", updatedWithRev)
+	}
+
+	// Verify the new expiry is far in the future (close to MaxHoldDuration).
+	newExpiry, err := unmarshalTime(updatedValue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectedHoldExpiry := time.Now().Add(10 * time.Minute)
+	if newExpiry.Before(expectedHoldExpiry.Add(-5 * time.Second)) {
+		t.Errorf("hold expiry %v is too early, expected ~%v", newExpiry, expectedHoldExpiry)
+	}
+}
+
+func TestHold_InvalidatesAllTimers(t *testing.T) {
+	// When Hold bumps the revision, any existing timer's tryFireCallback
+	// should fail with revision mismatch — simulating multi-replica protection.
+	originalExpiry := time.Now().Add(50 * time.Millisecond)
+	var callbackCalled atomic.Bool
+
+	kv := &mockKV{
+		getFn: func(_ context.Context, key string) (jetstream.KeyValueEntry, error) {
+			return &mockEntry{
+				key: key, value: marshalTime(originalExpiry),
+				revision: 1, operation: jetstream.KeyValuePut,
+			}, nil
+		},
+		updateFn: func(_ context.Context, _ string, _ []byte, _ uint64) (uint64, error) {
+			return 2, nil // bumped to rev 2
+		},
+		deleteFn: func(_ context.Context, _ string, _ ...jetstream.KVDeleteOpt) error {
+			// Simulate: the timer tries Delete(key, LastRevision(1)),
+			// but the current revision is 2 (bumped by Hold).
+			return &jetstream.APIError{Code: 400, ErrorCode: 10071, Description: "wrong last sequence"}
+		},
+	}
+	actor, cancel := newTestActor(kv)
+	defer cancel()
+
+	// Schedule a timer with rev=1 that expires in 50ms.
+	actor.scheduleTimer("key", 1, 50*time.Millisecond, func(_ context.Context, _ string) {
+		callbackCalled.Store(true)
+	})
+
+	// Hold the key — this bumps revision to 2.
+	holdCtx, holdCancel := context.WithCancel(context.Background())
+	defer holdCancel()
+	err := actor.Hold(holdCtx, "key")
+	if err != nil {
+		t.Fatalf("Hold failed: %v", err)
+	}
+
+	// Wait for the timer to fire (it should fail due to revision mismatch).
+	time.Sleep(200 * time.Millisecond)
+
+	if callbackCalled.Load() {
+		t.Error("callback should NOT fire — Hold bumped the revision, making the timer's Delete fail")
+	}
+}
+
+func TestHold_SeamlessTransition(t *testing.T) {
+	// When Add() is called during Hold, revision changes.
+	// On hold release, the goroutine detects this and skips restore.
+	originalExpiry := time.Now().Add(5 * time.Minute)
+
+	var currentRev atomic.Uint64
+	currentRev.Store(1)
+
+	var restoreCalled atomic.Bool
+
+	kv := &mockKV{
+		getFn: func(_ context.Context, key string) (jetstream.KeyValueEntry, error) {
+			rev := currentRev.Load()
+			return &mockEntry{
+				key: key, value: marshalTime(originalExpiry),
+				revision: rev, operation: jetstream.KeyValuePut,
+			}, nil
+		},
+		updateFn: func(_ context.Context, _ string, _ []byte, last uint64) (uint64, error) {
+			newRev := last + 1
+			currentRev.Store(newRev)
+			return newRev, nil
+		},
+	}
+	actor, cancel := newTestActor(kv)
+	defer cancel()
+
+	holdCtx, holdCancel := context.WithCancel(context.Background())
+
+	err := actor.Hold(holdCtx, "key")
+	if err != nil {
+		t.Fatalf("Hold failed: %v", err)
+	}
+	// After Hold: rev = 2 (original was 1, Hold CAS bumped to 2).
+	// holdRev captured inside Hold = 2.
+
+	// Simulate Add() during the hold — this bumps revision further.
+	currentRev.Store(3)
+
+	// Override updateFn to detect restore attempts.
+	kv.updateFn = func(_ context.Context, _ string, _ []byte, _ uint64) (uint64, error) {
+		restoreCalled.Store(true)
+		return 0, errors.New("should not be called")
+	}
+
+	// Release hold — should detect revision changed (3 ≠ 2) and skip restore.
+	holdCancel()
+	time.Sleep(200 * time.Millisecond) // let goroutine run
+
+	if restoreCalled.Load() {
+		t.Error("restore should NOT be called when revision changed during hold (seamless transition)")
+	}
+}
+
+func TestHold_RestoresOnFailure(t *testing.T) {
+	// When hold releases without Add() (transaction failed), the original
+	// expiry should be restored.
+	originalExpiry := time.Now().Add(5 * time.Minute)
+
+	var currentRev atomic.Uint64
+	currentRev.Store(1)
+
+	var restoredValue []byte
+	var restoredWithRev uint64
+
+	kv := &mockKV{
+		getFn: func(_ context.Context, key string) (jetstream.KeyValueEntry, error) {
+			rev := currentRev.Load()
+			return &mockEntry{
+				key: key, value: marshalTime(originalExpiry),
+				revision: rev, operation: jetstream.KeyValuePut,
+			}, nil
+		},
+		updateFn: func(_ context.Context, _ string, value []byte, last uint64) (uint64, error) {
+			currentRev.Store(last + 1)
+			restoredValue = value
+			restoredWithRev = last
+			return last + 1, nil
+		},
+	}
+	actor, cancel := newTestActor(kv)
+	defer cancel()
+
+	holdCtx, holdCancel := context.WithCancel(context.Background())
+
+	err := actor.Hold(holdCtx, "key")
+	if err != nil {
+		t.Fatalf("Hold failed: %v", err)
+	}
+	// After Hold: rev = 2 (CAS bumped 1→2). holdRev = 2.
+
+	// Release hold WITHOUT calling Add() — simulate transaction failure.
+	holdCancel()
+	time.Sleep(200 * time.Millisecond) // let goroutine run
+
+	// The restore CAS should have been called with holdRev=2.
+	if restoredWithRev != 2 {
+		t.Errorf("restore CAS used rev=%d, want 2", restoredWithRev)
+	}
+
+	// Verify original expiry was restored.
+	restored, err := unmarshalTime(restoredValue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !restored.Equal(originalExpiry) {
+		t.Errorf("restored expiry = %v, want %v", restored, originalExpiry)
+	}
+}
+
+func TestHold_GetError(t *testing.T) {
+	kv := &mockKV{
+		getFn: func(_ context.Context, _ string) (jetstream.KeyValueEntry, error) {
+			return nil, jetstream.ErrKeyNotFound
+		},
+	}
+	actor, cancel := newTestActor(kv)
+	defer cancel()
+
+	holdCtx, holdCancel := context.WithCancel(context.Background())
+	defer holdCancel()
+
+	err := actor.Hold(holdCtx, "nonexistent")
+	if err == nil {
+		t.Fatal("expected error for non-existent key")
+	}
+}
+
+func TestHold_CASConflict(t *testing.T) {
+	// If another replica modifies the key between Get and Update, Hold fails.
+	kv := &mockKV{
+		getFn: func(_ context.Context, key string) (jetstream.KeyValueEntry, error) {
+			return &mockEntry{
+				key: key, value: marshalTime(time.Now().Add(time.Minute)),
+				revision: 1, operation: jetstream.KeyValuePut,
+			}, nil
+		},
+		updateFn: func(_ context.Context, _ string, _ []byte, _ uint64) (uint64, error) {
+			return 0, &jetstream.APIError{Code: 400, ErrorCode: 10071, Description: "wrong last sequence"}
+		},
+	}
+	actor, cancel := newTestActor(kv)
+	defer cancel()
+
+	holdCtx, holdCancel := context.WithCancel(context.Background())
+	defer holdCancel()
+
+	err := actor.Hold(holdCtx, "key")
+	if err == nil {
+		t.Fatal("expected CAS conflict error")
+	}
+}
+
+func TestHold_KeyDeletedDuringHold(t *testing.T) {
+	// If the key is deleted while held, restore goroutine should handle
+	// gracefully (no panic, no error).
+	originalExpiry := time.Now().Add(5 * time.Minute)
+
+	getCallCount := 0
+	kv := &mockKV{
+		getFn: func(_ context.Context, key string) (jetstream.KeyValueEntry, error) {
+			getCallCount++
+			if getCallCount == 1 {
+				// First call: Hold reads the current entry.
+				return &mockEntry{
+					key: key, value: marshalTime(originalExpiry),
+					revision: 1, operation: jetstream.KeyValuePut,
+				}, nil
+			}
+			// Subsequent calls: key was deleted during hold.
+			return nil, jetstream.ErrKeyNotFound
+		},
+		updateFn: func(_ context.Context, _ string, _ []byte, _ uint64) (uint64, error) {
+			return 2, nil
+		},
+	}
+	actor, cancel := newTestActor(kv)
+	defer cancel()
+
+	holdCtx, holdCancel := context.WithCancel(context.Background())
+
+	err := actor.Hold(holdCtx, "key")
+	if err != nil {
+		t.Fatalf("Hold failed: %v", err)
+	}
+
+	// Release — goroutine tries Get, gets ErrKeyNotFound, exits gracefully.
+	holdCancel()
+	time.Sleep(200 * time.Millisecond)
+	// No panic = success.
+}
+
+func TestHold_WithSubscribe_FullFlow(t *testing.T) {
+	// Full integration test: Subscribe + Hold + Add = seamless transition.
+	// The old timer's callback should NOT fire (revision mismatch).
+	// A new timer should be scheduled for the new expiry.
+	watchCh := make(chan jetstream.KeyValueEntry, 10)
+	callbackCh := make(chan string, 10)
+
+	originalExpiry := time.Now().Add(50 * time.Millisecond)
+	var currentRev atomic.Uint64
+	currentRev.Store(1)
+
+	kv := &mockKV{
+		getFn: func(_ context.Context, key string) (jetstream.KeyValueEntry, error) {
+			rev := currentRev.Load()
+			return &mockEntry{
+				key: key, value: marshalTime(originalExpiry),
+				revision: rev, operation: jetstream.KeyValuePut,
+			}, nil
+		},
+		updateFn: func(_ context.Context, _ string, _ []byte, last uint64) (uint64, error) {
+			newRev := last + 1
+			currentRev.Store(newRev)
+			return newRev, nil
+		},
+		deleteFn: func(_ context.Context, _ string, _ ...jetstream.KVDeleteOpt) error {
+			// All deletes fail with revision mismatch (Hold bumped the rev).
+			return &jetstream.APIError{Code: 400, ErrorCode: 10071, Description: "wrong last sequence"}
+		},
+		watchFn: func(_ context.Context, _ string, _ ...jetstream.WatchOpt) (jetstream.KeyWatcher, error) {
+			return &mockWatcher{ch: watchCh}, nil
+		},
+	}
+	actor, cancel := newTestActor(kv)
+	defer cancel()
+	defer actor.Stop()
+
+	actor.Subscribe(context.Background(), "test.*", func(_ context.Context, key string) {
+		callbackCh <- key
+	})
+
+	// Step 1: Send an entry expiring in 50ms (rev=1).
+	watchCh <- &mockEntry{
+		key: "test.1", value: marshalTime(originalExpiry),
+		revision: 1, operation: jetstream.KeyValuePut,
+	}
+	time.Sleep(20 * time.Millisecond) // let watcher schedule the timer
+
+	// Step 2: Hold the key — CAS bumps rev to 2.
+	holdCtx, holdCancel := context.WithCancel(context.Background())
+	err := actor.Hold(holdCtx, "test.1")
+	if err != nil {
+		t.Fatalf("Hold failed: %v", err)
+	}
+
+	// Step 3: The timer fires at 50ms, but Delete fails (rev 1 ≠ current 2).
+	time.Sleep(200 * time.Millisecond)
+
+	// Step 4: Simulate Add() during hold (rev bumps further).
+	currentRev.Store(3)
+
+	// Step 5: Release hold.
+	holdCancel()
+	time.Sleep(200 * time.Millisecond)
+
+	// Verify no callback was fired.
+	select {
+	case key := <-callbackCh:
+		t.Errorf("expected no callback, but got %q", key)
+	default:
+		// Good — no callback fired.
 	}
 }

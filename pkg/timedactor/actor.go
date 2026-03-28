@@ -31,7 +31,8 @@ type TimedActor struct {
 	// watchers tracks all opened KV watchers so they can be stopped on shutdown.
 	watchers []jetstream.KeyWatcher
 
-	// wg tracks background goroutines started by Subscribe for graceful shutdown.
+	// wg tracks background goroutines started by Subscribe and Hold for
+	// graceful shutdown.
 	wg sync.WaitGroup
 
 	// cancel cancels the root context shared by all background goroutines.
@@ -90,6 +91,127 @@ func (ta *TimedActor) Add(ctx context.Context, key string, timeout time.Duration
 		Str("key", key).
 		Time("expires_at", expiresAt).
 		Msg("timer key added/updated")
+
+	return nil
+}
+
+// Hold temporarily suppresses callback execution for the given key across ALL
+// replicas by performing a CAS (Compare-And-Swap) update in the NATS KV store.
+//
+// How it works:
+//  1. Hold reads the current key value and its revision.
+//  2. It atomically updates the expiration to a far-future time using
+//     kv.Update (revision-guarded CAS). This bumps the revision, which
+//     invalidates all in-flight timers on ALL replicas — their
+//     kv.Delete(key, LastRevision(oldRev)) calls will fail with a
+//     revision mismatch.
+//  3. The KV watchers on all replicas pick up the new (far-future) value
+//     and reschedule their timers accordingly — no callback fires.
+//  4. When the hold's ctx is cancelled (transaction completes):
+//     - If Add() was called during the hold (revision changed),
+//     the new timeout takes over seamlessly — nothing to restore.
+//     - If no Add() was called (revision unchanged — transaction failed),
+//     the original expiration is restored via another CAS update.
+//
+// This is designed for long-running, multi-step transactions where you
+// need to prevent the timeout from firing mid-transaction but still want
+// the timeout to remain in the KV store in case the transaction fails.
+//
+// Usage:
+//
+//	holdCtx, holdCancel := context.WithCancel(ctx)
+//	err := actor.Hold(holdCtx, "order.123")
+//	if err != nil { ... }
+//	// ... perform long transaction ...
+//	actor.Add(ctx, "order.123", newTimeout) // set new timeout
+//	holdCancel()                            // release hold; old expiry discarded
+//
+// If the transaction fails and you don't call Add(), simply cancel the
+// holdCtx — the original expiration will be automatically restored.
+func (ta *TimedActor) Hold(ctx context.Context, key string) error {
+	// 1. Read the current entry to capture the original expiry and revision.
+	entry, err := ta.kv.Get(ctx, key)
+	if err != nil {
+		ta.logger.Error().Err(err).Str("key", key).Msg("hold: failed to get current entry")
+		return err
+	}
+
+	originalExpiry, err := unmarshalTime(entry.Value())
+	if err != nil {
+		ta.logger.Error().Err(err).Str("key", key).Msg("hold: failed to parse current expiry")
+		return err
+	}
+
+	originalRev := entry.Revision()
+
+	// 2. CAS update: push expiration far into the future.
+	//    This bumps the revision, invalidating ALL replicas' pending timers.
+	holdExpiry := time.Now().Add(ta.config.MaxHoldDuration)
+	holdRev, err := ta.kv.Update(ctx, key, marshalTime(holdExpiry), originalRev)
+	if err != nil {
+		ta.logger.Error().Err(err).Str("key", key).
+			Uint64("expected_rev", originalRev).
+			Msg("hold: CAS update failed (key may have been modified concurrently)")
+		return err
+	}
+
+	ta.logger.Debug().
+		Str("key", key).
+		Time("original_expiry", originalExpiry).
+		Time("hold_expiry", holdExpiry).
+		Uint64("original_rev", originalRev).
+		Uint64("hold_rev", holdRev).
+		Msg("hold acquired (distributed)")
+
+	// 3. Background goroutine: wait for hold release, then restore or skip.
+	ta.wg.Add(1)
+	go func() {
+		defer ta.wg.Done()
+
+		select {
+		case <-ctx.Done():
+			// Hold released by caller — proceed to check/restore.
+		case <-ta.ctx.Done():
+			// Actor stopping — exit without restore.
+			ta.logger.Debug().Str("key", key).Msg("actor stopping, hold abandoned")
+			return
+		}
+
+		// Re-check the key's current state in KV.
+		current, err := ta.kv.Get(ta.ctx, key)
+		if err != nil {
+			// Key was deleted or KV error — nothing to restore.
+			ta.logger.Debug().Err(err).Str("key", key).
+				Msg("hold released, key not found — skipping restore")
+			return
+		}
+
+		if current.Revision() != holdRev {
+			// Revision changed during hold — Add() or Clear() was called.
+			// The new value takes over seamlessly. No restore needed.
+			ta.logger.Info().
+				Str("key", key).
+				Uint64("hold_rev", holdRev).
+				Uint64("current_rev", current.Revision()).
+				Msg("hold released, revision changed — seamless transition")
+			return
+		}
+
+		// Revision unchanged — transaction failed without calling Add().
+		// Restore the original expiration.
+		_, err = ta.kv.Update(ta.ctx, key, marshalTime(originalExpiry), holdRev)
+		if err != nil {
+			ta.logger.Error().Err(err).Str("key", key).
+				Time("original_expiry", originalExpiry).
+				Msg("hold released, failed to restore original expiry")
+			return
+		}
+
+		ta.logger.Info().
+			Str("key", key).
+			Time("original_expiry", originalExpiry).
+			Msg("hold released, original expiry restored")
+	}()
 
 	return nil
 }
@@ -311,6 +433,10 @@ func (ta *TimedActor) scheduleTimer(key string, rev uint64, delay time.Duration,
 //
 // This provides an exactly-once guarantee: only one replica fires the callback,
 // even though all replicas attempt the delete concurrently.
+//
+// When a key is held (via Hold), the revision has already been bumped by the
+// CAS update, so this function's kv.Delete with the old revision will fail
+// with a revision mismatch — the callback is silently skipped.
 func (ta *TimedActor) tryFireCallback(key string, rev uint64, callback func(ctx context.Context, key string)) {
 	// Clean up the in-memory timer reference regardless of outcome.
 	ta.mu.Lock()

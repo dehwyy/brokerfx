@@ -1,7 +1,7 @@
 package conn
 
 import (
-	"context"
+	"errors"
 	"strings"
 	"time"
 
@@ -12,8 +12,8 @@ import (
 
 type Opts struct {
 	// Must be provided
-	KeySecretServers string // Should have value of []string
-	KeySecretSeedKey string // Should have value of string
+	Servers []string
+	SeedKey string
 	// Optional
 	CertFile             string
 	KeyFile              string
@@ -25,24 +25,21 @@ type Opts struct {
 	ReconnectWait        time.Duration
 }
 
-func New(opts Opts) func(SecretsProvider) (*nc.Conn, error) {
-	return func(secretsProvider SecretsProvider) (*nc.Conn, error) {
-
-		// Get servers
-		serversAny := secretsProvider.MustGet(context.Background(), opts.KeySecretServers).([]any)
-		servers := make([]string, len(serversAny))
-		for i, server := range serversAny {
-			servers[i] = server.(string)
+func New(opts Opts) func() (*nc.Conn, error) {
+	return func() (*nc.Conn, error) {
+		if len(opts.Servers) == 0 {
+			return nil, errors.New("'servers' must be provided")
+		}
+		if opts.SeedKey == "" {
+			return nil, errors.New("'seedKey' must be provided")
 		}
 
 		// Build connection options
-		connOptsBuilder := connbuilder.NewConnBuilder()
+		connOptsBuilder := connbuilder.NewConnBuilder().
+			WithNkey(opts.SeedKey)
 
 		if opts.EnabledTLS {
 			connOptsBuilder.WithTLS(opts.CertFile, opts.KeyFile, opts.CAFile)
-		}
-		if seedKey, err := secretsProvider.Get(context.Background(), opts.KeySecretSeedKey); err == nil {
-			connOptsBuilder.WithNkey(seedKey.(string))
 		}
 		if opts.RetryOnFailedConnect {
 			connOptsBuilder.WithRetryOnFailedConnect(true)
@@ -58,7 +55,7 @@ func New(opts Opts) func(SecretsProvider) (*nc.Conn, error) {
 		}
 
 		conn, err := nc.Connect(
-			strings.Join(servers, ","),
+			strings.Join(opts.Servers, ","),
 			connOptsBuilder.Build()...,
 		)
 		if err != nil {
@@ -70,7 +67,7 @@ func New(opts Opts) func(SecretsProvider) (*nc.Conn, error) {
 			panic(err)
 		}
 
-		log.Info().Dur("RTT", tt).Any("params", opts).Msg("RoundTripTime received")
+		log.Info().Dur("RTT", tt).Msg("RoundTripTime received")
 		return conn, nil
 	}
 }

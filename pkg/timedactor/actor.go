@@ -55,7 +55,8 @@ func New(deps Deps) (*TimedActor, error) {
 	// CreateOrUpdateKeyValue is idempotent: creates the bucket if it doesn't
 	// exist, or returns the existing one with updated config.
 	kv, err := deps.JS.CreateOrUpdateKeyValue(ctx, jetstream.KeyValueConfig{
-		Bucket: cfg.BucketName,
+		Bucket:  cfg.BucketName,
+		Storage: jetstream.MemoryStorage,
 	})
 	if err != nil {
 		return nil, err

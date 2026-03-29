@@ -2,6 +2,7 @@ package timedactor
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strconv"
 	"strings"
@@ -13,20 +14,33 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
+// Callback is the function signature for timeout callbacks.
+// It receives the key (e.g. "order.123") and the metadata that was stored
+// alongside the expiration timestamp.
+type Callback[T any] func(ctx context.Context, key string, metadata T)
+
 // TimedActor is a distributed timer/scheduler backed by NATS JetStream KV Store.
 //
-// It stores expiration timestamps as key values in a KV bucket and watches for
-// changes in real-time. When a key's expires_at time is reached, the actor
-// attempts an atomic revision-guarded delete to guarantee exactly-once callback
-// execution across multiple Kubernetes replicas.
-type TimedActor struct {
+// It stores expiration timestamps and arbitrary metadata as key values in a KV
+// bucket and watches for changes in real-time. When a key's expires_at time is
+// reached, the actor attempts an atomic revision-guarded delete to guarantee
+// exactly-once callback execution across multiple Kubernetes replicas.
+//
+// The type parameter T defines the metadata stored alongside each timer entry.
+// This can be any JSON-serializable type (e.g. a timeout type enum, a struct
+// with additional fields, etc.). The library itself does not interpret T — it
+// simply marshals/unmarshals it and passes it to the registered callbacks.
+type TimedActor[T any] struct {
 	kv     jetstream.KeyValue
 	logger zerolog.Logger
 	config Config
 
-	// mu guards the timers map.
+	// mu guards the timers map and the subscribers slice.
 	mu     sync.Mutex
 	timers map[string]*time.Timer
+
+	// subscribers holds all registered callback subscriptions (per key pattern).
+	subscribers []subscriber[T]
 
 	// watchers tracks all opened KV watchers so they can be stopped on shutdown.
 	watchers []jetstream.KeyWatcher
@@ -42,9 +56,26 @@ type TimedActor struct {
 	ctx context.Context
 }
 
+// subscriber represents a single callback registration bound to a metadata
+// matcher function. When a timer fires, all subscribers whose Match function
+// returns true for the entry's metadata are invoked.
+type subscriber[T any] struct {
+	// Match returns true if this subscriber should handle the given metadata.
+	// A nil Match function means "match everything" (wildcard subscriber).
+	Match    func(T) bool
+	Callback Callback[T]
+}
+
+// payload is the internal structure stored as KV value.
+// It wraps the expiration timestamp with arbitrary metadata.
+type payload[T any] struct {
+	ExpiresAt int64 `json:"e"` // Unix nanoseconds
+	Metadata  T     `json:"m"`
+}
+
 // New creates a new TimedActor instance. It ensures the KV bucket exists,
 // creating it if necessary. This function is intended to be called by Uber fx.
-func New(deps Deps) (*TimedActor, error) {
+func New[T any](deps Deps) (*TimedActor[T], error) {
 	cfg := deps.Config
 	if cfg.BucketName == "" {
 		cfg = DefaultConfig()
@@ -64,7 +95,7 @@ func New(deps Deps) (*TimedActor, error) {
 
 	rootCtx, cancel := context.WithCancel(context.Background())
 
-	return &TimedActor{
+	return &TimedActor[T]{
 		kv:     kv,
 		logger: log.With().Str("component", "timed-actor").Logger(),
 		config: cfg,
@@ -76,13 +107,21 @@ func New(deps Deps) (*TimedActor, error) {
 
 // Add creates or updates a timer key in the KV bucket.
 // It computes expires_at = now + timeout and stores the Unix-nano timestamp
-// as the key's payload. If a Subscribe goroutine is running, it will pick up
-// the change via the KV watcher and schedule the in-memory timer automatically.
-func (ta *TimedActor) Add(ctx context.Context, key string, timeout time.Duration) error {
+// along with the provided metadata as JSON. If a Subscribe goroutine is running,
+// it will pick up the change via the KV watcher and schedule the in-memory
+// timer automatically.
+func (ta *TimedActor[T]) Add(ctx context.Context, key string, metadata T, timeout time.Duration) error {
 	expiresAt := time.Now().Add(timeout)
-	payload := marshalTime(expiresAt)
+	data, err := marshalPayload(payload[T]{
+		ExpiresAt: expiresAt.UnixNano(),
+		Metadata:  metadata,
+	})
+	if err != nil {
+		ta.logger.Error().Err(err).Str("key", key).Msg("failed to marshal payload")
+		return err
+	}
 
-	_, err := ta.kv.Put(ctx, key, payload)
+	_, err = ta.kv.Put(ctx, key, data)
 	if err != nil {
 		ta.logger.Error().Err(err).Str("key", key).Msg("failed to put timer key")
 		return err
@@ -114,9 +153,8 @@ func (ta *TimedActor) Add(ctx context.Context, key string, timeout time.Duration
 //     - If no Add() was called (revision unchanged — transaction failed),
 //     the original expiration is restored via another CAS update.
 //
-// This is designed for long-running, multi-step transactions where you
-// need to prevent the timeout from firing mid-transaction but still want
-// the timeout to remain in the KV store in case the transaction fails.
+// The metadata stored in the entry is preserved during Hold — only the
+// expiration timestamp is modified.
 //
 // Usage:
 //
@@ -124,31 +162,42 @@ func (ta *TimedActor) Add(ctx context.Context, key string, timeout time.Duration
 //	err := actor.Hold(holdCtx, "order.123")
 //	if err != nil { ... }
 //	// ... perform long transaction ...
-//	actor.Add(ctx, "order.123", newTimeout) // set new timeout
-//	holdCancel()                            // release hold; old expiry discarded
+//	actor.Add(ctx, "order.123", metadata, newTimeout) // set new timeout
+//	holdCancel()                                       // release hold; old expiry discarded
 //
 // If the transaction fails and you don't call Add(), simply cancel the
 // holdCtx — the original expiration will be automatically restored.
-func (ta *TimedActor) Hold(ctx context.Context, key string) error {
-	// 1. Read the current entry to capture the original expiry and revision.
+func (ta *TimedActor[T]) Hold(ctx context.Context, key string) error {
+	// 1. Read the current entry to capture the original payload and revision.
 	entry, err := ta.kv.Get(ctx, key)
 	if err != nil {
 		ta.logger.Error().Err(err).Str("key", key).Msg("hold: failed to get current entry")
 		return err
 	}
 
-	originalExpiry, err := unmarshalTime(entry.Value())
+	originalPayload, err := unmarshalPayload[T](entry.Value())
 	if err != nil {
-		ta.logger.Error().Err(err).Str("key", key).Msg("hold: failed to parse current expiry")
+		ta.logger.Error().Err(err).Str("key", key).Msg("hold: failed to parse current payload")
 		return err
 	}
 
 	originalRev := entry.Revision()
+	originalExpiry := time.Unix(0, originalPayload.ExpiresAt)
 
-	// 2. CAS update: push expiration far into the future.
+	// 2. CAS update: push expiration far into the future, preserving metadata.
 	//    This bumps the revision, invalidating ALL replicas' pending timers.
 	holdExpiry := time.Now().Add(ta.config.MaxHoldDuration)
-	holdRev, err := ta.kv.Update(ctx, key, marshalTime(holdExpiry), originalRev)
+	holdPayload := payload[T]{
+		ExpiresAt: holdExpiry.UnixNano(),
+		Metadata:  originalPayload.Metadata,
+	}
+	holdData, err := marshalPayload(holdPayload)
+	if err != nil {
+		ta.logger.Error().Err(err).Str("key", key).Msg("hold: failed to marshal hold payload")
+		return err
+	}
+
+	holdRev, err := ta.kv.Update(ctx, key, holdData, originalRev)
 	if err != nil {
 		ta.logger.Error().Err(err).Str("key", key).
 			Uint64("expected_rev", originalRev).
@@ -199,8 +248,15 @@ func (ta *TimedActor) Hold(ctx context.Context, key string) error {
 		}
 
 		// Revision unchanged — transaction failed without calling Add().
-		// Restore the original expiration.
-		_, err = ta.kv.Update(ta.ctx, key, marshalTime(originalExpiry), holdRev)
+		// Restore the original payload (with original expiry).
+		originalData, err := marshalPayload(originalPayload)
+		if err != nil {
+			ta.logger.Error().Err(err).Str("key", key).
+				Msg("hold released, failed to marshal original payload for restore")
+			return
+		}
+
+		_, err = ta.kv.Update(ta.ctx, key, originalData, holdRev)
 		if err != nil {
 			ta.logger.Error().Err(err).Str("key", key).
 				Time("original_expiry", originalExpiry).
@@ -220,7 +276,7 @@ func (ta *TimedActor) Hold(ctx context.Context, key string) error {
 // Clear removes a timer key from the KV bucket, effectively cancelling
 // the scheduled timeout. The in-memory timer (if any) will be cleaned up
 // by the watcher goroutine when it receives the delete marker.
-func (ta *TimedActor) Clear(ctx context.Context, key string) error {
+func (ta *TimedActor[T]) Clear(ctx context.Context, key string) error {
 	err := ta.kv.Delete(ctx, key)
 	if err != nil {
 		// Key might already be deleted; treat as non-fatal.
@@ -238,10 +294,10 @@ func (ta *TimedActor) Clear(ctx context.Context, key string) error {
 	return nil
 }
 
-// List returns the expiration times for the requested keys. If no keys are
-// provided, it returns all active keys in the bucket.
-func (ta *TimedActor) List(ctx context.Context, keys ...string) (map[string]time.Time, error) {
-	result := make(map[string]time.Time)
+// List returns the expiration times and metadata for the requested keys.
+// If no keys are provided, it returns all active keys in the bucket.
+func (ta *TimedActor[T]) List(ctx context.Context, keys ...string) (map[string]Entry[T], error) {
+	result := make(map[string]Entry[T])
 
 	if len(keys) == 0 {
 		// List all keys in the bucket.
@@ -268,26 +324,47 @@ func (ta *TimedActor) List(ctx context.Context, keys ...string) (map[string]time
 			return nil, err
 		}
 
-		t, err := unmarshalTime(entry.Value())
+		p, err := unmarshalPayload[T](entry.Value())
 		if err != nil {
-			ta.logger.Warn().Err(err).Str("key", key).Msg("failed to parse expires_at, skipping")
+			ta.logger.Warn().Err(err).Str("key", key).Msg("failed to parse payload, skipping")
 			continue
 		}
 
-		result[key] = t
+		result[key] = Entry[T]{
+			ExpiresAt: time.Unix(0, p.ExpiresAt),
+			Metadata:  p.Metadata,
+		}
 	}
 
 	return result, nil
+}
+
+// Entry represents a timer entry returned by List.
+type Entry[T any] struct {
+	ExpiresAt time.Time
+	Metadata  T
 }
 
 // Subscribe starts a background watcher that monitors keys matching eventKey
 // (e.g. "order.*" or ">") and fires the callback exactly once (across all
 // replicas) when a key's expiration time is reached.
 //
+// The match function filters entries by their metadata. Only entries whose
+// metadata satisfies the match function will trigger this callback. Pass nil
+// as match to subscribe to ALL entries regardless of metadata (wildcard).
+//
 // This method is intended to be called once at application startup. It launches
 // goroutines that are tracked via sync.WaitGroup and cancelled via the actor's
-// root context. Multiple calls with different eventKey patterns are supported.
-func (ta *TimedActor) Subscribe(ctx context.Context, eventKey string, callback func(ctx context.Context, key string)) {
+// root context. Multiple calls with different eventKey patterns / match
+// functions are supported.
+func (ta *TimedActor[T]) Subscribe(ctx context.Context, eventKey string, match func(T) bool, callback Callback[T]) {
+	ta.mu.Lock()
+	ta.subscribers = append(ta.subscribers, subscriber[T]{
+		Match:    match,
+		Callback: callback,
+	})
+	ta.mu.Unlock()
+
 	ta.wg.Add(1)
 
 	go func() {
@@ -331,10 +408,10 @@ func (ta *TimedActor) Subscribe(ctx context.Context, eventKey string, callback f
 					continue
 				}
 
-				ta.handleWatchEntry(entry, callback)
+				ta.handleWatchEntry(entry)
 
 			case <-ticker.C:
-				ta.rescanOverdueTimers(callback)
+				ta.rescanOverdueTimers()
 			}
 		}
 	}()
@@ -343,7 +420,7 @@ func (ta *TimedActor) Subscribe(ctx context.Context, eventKey string, callback f
 // Stop cancels all background goroutines spawned by Subscribe and waits for
 // them to finish. It also stops all opened KV watchers. This method is called
 // by the fx.Lifecycle OnStop hook.
-func (ta *TimedActor) Stop() {
+func (ta *TimedActor[T]) Stop() {
 	ta.logger.Info().Msg("timed-actor stopping")
 
 	// Signal all goroutines to exit.
@@ -372,7 +449,7 @@ func (ta *TimedActor) Stop() {
 // handleWatchEntry processes a single KV watcher entry. For put/update
 // operations it schedules (or reschedules) an in-memory timer. For delete
 // operations it clears the timer.
-func (ta *TimedActor) handleWatchEntry(entry jetstream.KeyValueEntry, callback func(ctx context.Context, key string)) {
+func (ta *TimedActor[T]) handleWatchEntry(entry jetstream.KeyValueEntry) {
 	key := entry.Key()
 
 	// A delete marker means the key was removed (either by Clear or by a
@@ -382,24 +459,25 @@ func (ta *TimedActor) handleWatchEntry(entry jetstream.KeyValueEntry, callback f
 		return
 	}
 
-	expiresAt, err := unmarshalTime(entry.Value())
+	p, err := unmarshalPayload[T](entry.Value())
 	if err != nil {
-		ta.logger.Warn().Err(err).Str("key", key).Msg("invalid expires_at payload, skipping")
+		ta.logger.Warn().Err(err).Str("key", key).Msg("invalid payload, skipping")
 		return
 	}
 
+	expiresAt := time.Unix(0, p.ExpiresAt)
 	rev := entry.Revision()
 	delay := time.Until(expiresAt)
 	if delay < 0 {
 		delay = 0
 	}
 
-	ta.scheduleTimer(key, rev, delay, callback)
+	ta.scheduleTimer(key, rev, delay, p.Metadata)
 }
 
 // scheduleTimer creates or replaces an in-memory timer for the given key.
 // When the timer fires, it attempts an atomic revision-guarded delete.
-func (ta *TimedActor) scheduleTimer(key string, rev uint64, delay time.Duration, callback func(ctx context.Context, key string)) {
+func (ta *TimedActor[T]) scheduleTimer(key string, rev uint64, delay time.Duration, metadata T) {
 	ta.mu.Lock()
 	defer ta.mu.Unlock()
 
@@ -409,7 +487,7 @@ func (ta *TimedActor) scheduleTimer(key string, rev uint64, delay time.Duration,
 	}
 
 	ta.timers[key] = time.AfterFunc(delay, func() {
-		ta.tryFireCallback(key, rev, callback)
+		ta.tryFireCallback(key, rev, metadata)
 	})
 
 	ta.logger.Debug().
@@ -438,7 +516,7 @@ func (ta *TimedActor) scheduleTimer(key string, rev uint64, delay time.Duration,
 // When a key is held (via Hold), the revision has already been bumped by the
 // CAS update, so this function's kv.Delete with the old revision will fail
 // with a revision mismatch — the callback is silently skipped.
-func (ta *TimedActor) tryFireCallback(key string, rev uint64, callback func(ctx context.Context, key string)) {
+func (ta *TimedActor[T]) tryFireCallback(key string, rev uint64, metadata T) {
 	// Clean up the in-memory timer reference regardless of outcome.
 	ta.mu.Lock()
 	delete(ta.timers, key)
@@ -469,15 +547,31 @@ func (ta *TimedActor) tryFireCallback(key string, rev uint64, callback func(ctx 
 	}
 
 	// This replica successfully deleted the key — it "won" the race.
-	// Execute the callback.
-	ta.logger.Info().Str("key", key).Uint64("rev", rev).Msg("won race, firing callback")
-	callback(ta.ctx, key)
+	// Execute matching callbacks.
+	ta.logger.Info().Str("key", key).Uint64("rev", rev).Msg("won race, firing callbacks")
+	ta.fireMatchingCallbacks(key, metadata)
+}
+
+// fireMatchingCallbacks invokes all registered subscribers whose Match function
+// accepts the given metadata. If a subscriber has no Match function (nil), it
+// is treated as a wildcard and always invoked.
+func (ta *TimedActor[T]) fireMatchingCallbacks(key string, metadata T) {
+	ta.mu.Lock()
+	subs := make([]subscriber[T], len(ta.subscribers))
+	copy(subs, ta.subscribers)
+	ta.mu.Unlock()
+
+	for _, sub := range subs {
+		if sub.Match == nil || sub.Match(metadata) {
+			sub.Callback(ta.ctx, key, metadata)
+		}
+	}
 }
 
 // rescanOverdueTimers is a safety-net that re-checks all tracked keys.
 // If any key's timer has already expired but no timer is scheduled (e.g. due
 // to a missed watch event), it will attempt to fire the callback.
-func (ta *TimedActor) rescanOverdueTimers(callback func(ctx context.Context, key string)) {
+func (ta *TimedActor[T]) rescanOverdueTimers() {
 	ta.mu.Lock()
 	// Collect keys that currently have scheduled timers — these are already
 	// being handled, so we skip them.
@@ -510,10 +604,12 @@ func (ta *TimedActor) rescanOverdueTimers(callback func(ctx context.Context, key
 			continue
 		}
 
-		expiresAt, err := unmarshalTime(entry.Value())
+		p, err := unmarshalPayload[T](entry.Value())
 		if err != nil {
 			continue
 		}
+
+		expiresAt := time.Unix(0, p.ExpiresAt)
 
 		if now.After(expiresAt) {
 			// Key is overdue and not tracked — attempt to fire.
@@ -521,16 +617,16 @@ func (ta *TimedActor) rescanOverdueTimers(callback func(ctx context.Context, key
 				Str("key", key).
 				Time("expires_at", expiresAt).
 				Msg("rescan found overdue key, attempting callback")
-			ta.tryFireCallback(key, entry.Revision(), callback)
+			ta.tryFireCallback(key, entry.Revision(), p.Metadata)
 		} else {
 			// Key is not yet expired but not tracked — re-schedule.
-			ta.scheduleTimer(key, entry.Revision(), time.Until(expiresAt), callback)
+			ta.scheduleTimer(key, entry.Revision(), time.Until(expiresAt), p.Metadata)
 		}
 	}
 }
 
 // stopTimer stops and removes the in-memory timer for the given key.
-func (ta *TimedActor) stopTimer(key string) {
+func (ta *TimedActor[T]) stopTimer(key string) {
 	ta.mu.Lock()
 	defer ta.mu.Unlock()
 
@@ -540,20 +636,27 @@ func (ta *TimedActor) stopTimer(key string) {
 	}
 }
 
-// marshalTime converts a time.Time to a byte slice by encoding its Unix
-// nanosecond timestamp as a decimal string. This avoids JSON overhead while
-// being deterministic across platforms.
-func marshalTime(t time.Time) []byte {
-	return []byte(strconv.FormatInt(t.UnixNano(), 10))
+// marshalPayload serializes a payload to JSON bytes.
+func marshalPayload[T any](p payload[T]) ([]byte, error) {
+	return json.Marshal(p)
 }
 
-// unmarshalTime parses a byte slice produced by marshalTime back into time.Time.
-func unmarshalTime(data []byte) (time.Time, error) {
-	ns, err := strconv.ParseInt(string(data), 10, 64)
-	if err != nil {
-		return time.Time{}, err
+// unmarshalPayload deserializes a payload from JSON bytes.
+// For backward compatibility, if JSON unmarshal fails, it attempts to parse
+// the data as a legacy plain Unix-nano timestamp (without metadata).
+func unmarshalPayload[T any](data []byte) (payload[T], error) {
+	var p payload[T]
+	if err := json.Unmarshal(data, &p); err != nil {
+		// Backward compatibility: try parsing as legacy plain timestamp.
+		ns, parseErr := strconv.ParseInt(string(data), 10, 64)
+		if parseErr != nil {
+			return p, err // return original JSON error
+		}
+		p.ExpiresAt = ns
+		// Metadata remains zero value of T.
+		return p, nil
 	}
-	return time.Unix(0, ns), nil
+	return p, nil
 }
 
 // isRevisionMismatch checks whether the error indicates that the key's revision

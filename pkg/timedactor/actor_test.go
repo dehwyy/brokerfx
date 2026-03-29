@@ -94,12 +94,21 @@ type mockKeyLister struct {
 func (l *mockKeyLister) Keys() <-chan string { return l.ch }
 
 // ===========================================================================
+// Test metadata type
+// ===========================================================================
+
+// testMeta is a simple metadata type used in tests.
+type testMeta struct {
+	Type string `json:"type"`
+}
+
+// ===========================================================================
 // Helpers
 // ===========================================================================
 
-func newTestActor(kv jetstream.KeyValue) (*TimedActor, context.CancelFunc) {
+func newTestActor(kv jetstream.KeyValue) (*TimedActor[testMeta], context.CancelFunc) {
 	ctx, cancel := context.WithCancel(context.Background())
-	return &TimedActor{
+	return &TimedActor[testMeta]{
 		kv:     kv,
 		logger: zerolog.Nop(),
 		config: Config{
@@ -122,36 +131,59 @@ func closedKeyLister(keys ...string) *mockKeyLister {
 	return &mockKeyLister{ch: ch}
 }
 
+func mustMarshalPayload(t *testing.T, expiresAt time.Time, meta testMeta) []byte {
+	p := payload[testMeta]{ExpiresAt: expiresAt.UnixNano(), Metadata: meta}
+	data, err := marshalPayload(p)
+	if err != nil {
+		t.Fatalf("marshalPayload: %v", err)
+	}
+	return data
+}
+
 // ===========================================================================
-// Tests: marshalTime / unmarshalTime
+// Tests: marshalPayload / unmarshalPayload
 // ===========================================================================
 
-func TestMarshalUnmarshalTime_RoundTrip(t *testing.T) {
+func TestMarshalUnmarshalPayload_RoundTrip(t *testing.T) {
 	now := time.Now()
-	data := marshalTime(now)
-	got, err := unmarshalTime(data)
+	meta := testMeta{Type: "TIMEOUT_SELECT_REQUISITE"}
+	p := payload[testMeta]{ExpiresAt: now.UnixNano(), Metadata: meta}
+	data, err := marshalPayload(p)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !got.Equal(now) {
-		t.Errorf("got %v, want %v", got, now)
-	}
-}
-
-func TestMarshalUnmarshalTime_UnixEpoch(t *testing.T) {
-	epoch := time.Unix(0, 0)
-	data := marshalTime(epoch)
-	got, err := unmarshalTime(data)
+	got, err := unmarshalPayload[testMeta](data)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !got.Equal(epoch) {
-		t.Errorf("got %v, want Unix epoch", got)
+	if got.ExpiresAt != now.UnixNano() {
+		t.Errorf("ExpiresAt = %d, want %d", got.ExpiresAt, now.UnixNano())
+	}
+	if got.Metadata.Type != "TIMEOUT_SELECT_REQUISITE" {
+		t.Errorf("Metadata.Type = %q, want TIMEOUT_SELECT_REQUISITE", got.Metadata.Type)
 	}
 }
 
-func TestUnmarshalTime_InvalidData(t *testing.T) {
-	_, err := unmarshalTime([]byte("not-a-number"))
+func TestUnmarshalPayload_LegacyTimestamp(t *testing.T) {
+	// Legacy format: plain Unix-nano string.
+	now := time.Now()
+	legacyData := []byte("1700000000000000000")
+	got, err := unmarshalPayload[testMeta](legacyData)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	_ = now
+	if got.ExpiresAt != 1700000000000000000 {
+		t.Errorf("ExpiresAt = %d, want 1700000000000000000", got.ExpiresAt)
+	}
+	// Metadata should be zero value.
+	if got.Metadata.Type != "" {
+		t.Errorf("Metadata.Type = %q, want empty string (zero)", got.Metadata.Type)
+	}
+}
+
+func TestUnmarshalPayload_InvalidData(t *testing.T) {
+	_, err := unmarshalPayload[testMeta]([]byte("not-valid-at-all"))
 	if err == nil {
 		t.Fatal("expected error for invalid data")
 	}
@@ -194,7 +226,7 @@ func TestNew_DefaultConfig(t *testing.T) {
 			return &mockKV{}, nil
 		},
 	}
-	actor, err := New(Deps{JS: js})
+	actor, err := New[testMeta](Deps{JS: js})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -214,7 +246,7 @@ func TestNew_CustomConfig(t *testing.T) {
 			return &mockKV{}, nil
 		},
 	}
-	actor, err := New(Deps{
+	actor, err := New[testMeta](Deps{
 		JS:     js,
 		Config: Config{BucketName: "custom-bucket", CheckInterval: 10 * time.Second},
 	})
@@ -235,7 +267,7 @@ func TestNew_CreateBucketError(t *testing.T) {
 			return nil, errors.New("nats: connection closed")
 		},
 	}
-	actor, err := New(Deps{JS: js})
+	actor, err := New[testMeta](Deps{JS: js})
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -261,21 +293,26 @@ func TestAdd_Success(t *testing.T) {
 	actor, cancel := newTestActor(kv)
 	defer cancel()
 
+	meta := testMeta{Type: "TIMEOUT_VISIT_RESOURCE"}
 	before := time.Now()
-	err := actor.Add(context.Background(), "order.123", 5*time.Minute)
+	err := actor.Add(context.Background(), "order.123", meta, 5*time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if gotKey != "order.123" {
 		t.Errorf("key = %q, want order.123", gotKey)
 	}
-	expiresAt, err := unmarshalTime(gotValue)
+	p, err := unmarshalPayload[testMeta](gotValue)
 	if err != nil {
 		t.Fatal(err)
 	}
+	expiresAt := time.Unix(0, p.ExpiresAt)
 	expected := before.Add(5 * time.Minute)
 	if expiresAt.Before(expected.Add(-1*time.Second)) || expiresAt.After(expected.Add(1*time.Second)) {
 		t.Errorf("expires_at = %v, want ~%v", expiresAt, expected)
+	}
+	if p.Metadata.Type != "TIMEOUT_VISIT_RESOURCE" {
+		t.Errorf("metadata.Type = %q, want TIMEOUT_VISIT_RESOURCE", p.Metadata.Type)
 	}
 }
 
@@ -288,7 +325,7 @@ func TestAdd_PutError(t *testing.T) {
 	actor, cancel := newTestActor(kv)
 	defer cancel()
 
-	err := actor.Add(context.Background(), "key", time.Second)
+	err := actor.Add(context.Background(), "key", testMeta{}, time.Second)
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -305,8 +342,8 @@ func TestAdd_OverwriteExisting(t *testing.T) {
 	actor, cancel := newTestActor(kv)
 	defer cancel()
 
-	_ = actor.Add(context.Background(), "key", time.Minute)
-	_ = actor.Add(context.Background(), "key", 2*time.Minute)
+	_ = actor.Add(context.Background(), "key", testMeta{Type: "A"}, time.Minute)
+	_ = actor.Add(context.Background(), "key", testMeta{Type: "B"}, 2*time.Minute)
 	if callCount != 2 {
 		t.Errorf("put called %d times, want 2", callCount)
 	}
@@ -403,7 +440,7 @@ func TestList_AllKeysWithEntries(t *testing.T) {
 			if !ok {
 				return nil, jetstream.ErrKeyNotFound
 			}
-			return &mockEntry{key: key, value: marshalTime(t), revision: 1, operation: jetstream.KeyValuePut}, nil
+			return &mockEntry{key: key, value: mustMarshalPayload(nil, t, testMeta{}), revision: 1, operation: jetstream.KeyValuePut}, nil
 		},
 	}
 	actor, cancel := newTestActor(kv)
@@ -422,8 +459,8 @@ func TestList_AllKeysWithEntries(t *testing.T) {
 			t.Errorf("missing key %q", k)
 			continue
 		}
-		if !got.Equal(expected) {
-			t.Errorf("key %q: got %v, want %v", k, got, expected)
+		if !got.ExpiresAt.Equal(expected) {
+			t.Errorf("key %q: got %v, want %v", k, got.ExpiresAt, expected)
 		}
 	}
 }
@@ -433,7 +470,7 @@ func TestList_SpecificKeys(t *testing.T) {
 	kv := &mockKV{
 		getFn: func(_ context.Context, key string) (jetstream.KeyValueEntry, error) {
 			if key == "exists" {
-				return &mockEntry{key: key, value: marshalTime(now), revision: 1, operation: jetstream.KeyValuePut}, nil
+				return &mockEntry{key: key, value: mustMarshalPayload(nil, now, testMeta{Type: "TEST"}), revision: 1, operation: jetstream.KeyValuePut}, nil
 			}
 			return nil, jetstream.ErrKeyNotFound
 		},
@@ -467,12 +504,21 @@ func TestTryFireCallback_WinsRace(t *testing.T) {
 	actor, cancel := newTestActor(kv)
 	defer cancel()
 
-	actor.tryFireCallback("key", 1, func(_ context.Context, key string) {
-		called.Store(true)
-		if key != "key" {
-			t.Errorf("callback key = %q, want 'key'", key)
-		}
+	actor.mu.Lock()
+	actor.subscribers = append(actor.subscribers, subscriber[testMeta]{
+		Callback: func(_ context.Context, key string, meta testMeta) {
+			called.Store(true)
+			if key != "key" {
+				t.Errorf("callback key = %q, want 'key'", key)
+			}
+			if meta.Type != "TEST_TYPE" {
+				t.Errorf("callback meta.Type = %q, want 'TEST_TYPE'", meta.Type)
+			}
+		},
 	})
+	actor.mu.Unlock()
+
+	actor.tryFireCallback("key", 1, testMeta{Type: "TEST_TYPE"})
 	if !called.Load() {
 		t.Error("expected callback to be called")
 	}
@@ -488,9 +534,13 @@ func TestTryFireCallback_LosesRace(t *testing.T) {
 	actor, cancel := newTestActor(kv)
 	defer cancel()
 
-	actor.tryFireCallback("key", 1, func(_ context.Context, _ string) {
-		called.Store(true)
+	actor.mu.Lock()
+	actor.subscribers = append(actor.subscribers, subscriber[testMeta]{
+		Callback: func(_ context.Context, _ string, _ testMeta) { called.Store(true) },
 	})
+	actor.mu.Unlock()
+
+	actor.tryFireCallback("key", 1, testMeta{})
 	if called.Load() {
 		t.Error("callback should NOT be called on revision mismatch")
 	}
@@ -506,9 +556,13 @@ func TestTryFireCallback_KeyAlreadyDeleted(t *testing.T) {
 	actor, cancel := newTestActor(kv)
 	defer cancel()
 
-	actor.tryFireCallback("key", 1, func(_ context.Context, _ string) {
-		called.Store(true)
+	actor.mu.Lock()
+	actor.subscribers = append(actor.subscribers, subscriber[testMeta]{
+		Callback: func(_ context.Context, _ string, _ testMeta) { called.Store(true) },
 	})
+	actor.mu.Unlock()
+
+	actor.tryFireCallback("key", 1, testMeta{})
 	if called.Load() {
 		t.Error("callback should NOT be called when key is already deleted")
 	}
@@ -534,13 +588,14 @@ func TestSubscribe_CallbackFiresOnExpiry(t *testing.T) {
 	defer cancel()
 	defer actor.Stop()
 
-	actor.Subscribe(context.Background(), "test.*", func(_ context.Context, key string) {
+	meta := testMeta{Type: "TIMEOUT_VISIT_RESOURCE"}
+	actor.Subscribe(context.Background(), "test.*", nil, func(_ context.Context, key string, m testMeta) {
 		callbackCh <- key
 	})
 
 	// Send an entry expiring in 50ms.
 	watchCh <- &mockEntry{
-		key: "test.1", value: marshalTime(time.Now().Add(50 * time.Millisecond)),
+		key: "test.1", value: mustMarshalPayload(t, time.Now().Add(50*time.Millisecond), meta),
 		revision: 1, operation: jetstream.KeyValuePut,
 	}
 
@@ -570,13 +625,13 @@ func TestSubscribe_RevisionMismatchSkipsCallback(t *testing.T) {
 	defer cancel()
 	defer actor.Stop()
 
-	actor.Subscribe(context.Background(), "test.*", func(_ context.Context, _ string) {
+	actor.Subscribe(context.Background(), "test.*", nil, func(_ context.Context, _ string, _ testMeta) {
 		called.Store(true)
 	})
 
 	// Expires immediately.
 	watchCh <- &mockEntry{
-		key: "test.1", value: marshalTime(time.Now()),
+		key: "test.1", value: mustMarshalPayload(t, time.Now(), testMeta{}),
 		revision: 1, operation: jetstream.KeyValuePut,
 	}
 
@@ -602,13 +657,13 @@ func TestSubscribe_DeleteMarkerClearsTimer(t *testing.T) {
 	defer cancel()
 	defer actor.Stop()
 
-	actor.Subscribe(context.Background(), "test.*", func(_ context.Context, _ string) {
+	actor.Subscribe(context.Background(), "test.*", nil, func(_ context.Context, _ string, _ testMeta) {
 		called.Store(true)
 	})
 
 	// Add entry expiring in 500ms.
 	watchCh <- &mockEntry{
-		key: "test.1", value: marshalTime(time.Now().Add(500 * time.Millisecond)),
+		key: "test.1", value: mustMarshalPayload(t, time.Now().Add(500*time.Millisecond), testMeta{}),
 		revision: 1, operation: jetstream.KeyValuePut,
 	}
 	time.Sleep(50 * time.Millisecond) // let watcher goroutine schedule the timer
@@ -625,6 +680,155 @@ func TestSubscribe_DeleteMarkerClearsTimer(t *testing.T) {
 }
 
 // ===========================================================================
+// Tests: Subscribe with metadata filtering
+// ===========================================================================
+
+func TestSubscribe_RoutingByMetadata(t *testing.T) {
+	watchCh := make(chan jetstream.KeyValueEntry, 10)
+	visitCh := make(chan string, 1)
+	selectCh := make(chan string, 1)
+
+	kv := &mockKV{
+		deleteFn: func(_ context.Context, _ string, _ ...jetstream.KVDeleteOpt) error {
+			return nil
+		},
+		watchFn: func(_ context.Context, _ string, _ ...jetstream.WatchOpt) (jetstream.KeyWatcher, error) {
+			return &mockWatcher{ch: watchCh}, nil
+		},
+	}
+	actor, cancel := newTestActor(kv)
+	defer cancel()
+	defer actor.Stop()
+
+	// Subscribe with metadata filter for VISIT_RESOURCE.
+	actor.Subscribe(context.Background(), "test.*",
+		func(m testMeta) bool { return m.Type == "TIMEOUT_VISIT_RESOURCE" },
+		func(_ context.Context, key string, _ testMeta) { visitCh <- key },
+	)
+
+	// Subscribe with metadata filter for SELECT_REQUISITE.
+	actor.Subscribe(context.Background(), "test.*",
+		func(m testMeta) bool { return m.Type == "TIMEOUT_SELECT_REQUISITE" },
+		func(_ context.Context, key string, _ testMeta) { selectCh <- key },
+	)
+
+	// Send an entry with VISIT_RESOURCE type.
+	watchCh <- &mockEntry{
+		key: "test.1", value: mustMarshalPayload(t, time.Now().Add(50*time.Millisecond), testMeta{Type: "TIMEOUT_VISIT_RESOURCE"}),
+		revision: 1, operation: jetstream.KeyValuePut,
+	}
+
+	select {
+	case key := <-visitCh:
+		if key != "test.1" {
+			t.Errorf("visit callback key = %q, want test.1", key)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("timeout waiting for visit callback")
+	}
+
+	// SELECT callback should NOT have been called.
+	select {
+	case key := <-selectCh:
+		t.Errorf("select callback should NOT fire for VISIT_RESOURCE, got %q", key)
+	default:
+	}
+}
+
+func TestSubscribe_MetadataOverwrite(t *testing.T) {
+	// When Add() is called with a new metadata type, the old timer is replaced
+	// and the new metadata's callback should fire.
+	watchCh := make(chan jetstream.KeyValueEntry, 10)
+	receiptCh := make(chan string, 1)
+	var visitCalled atomic.Bool
+
+	kv := &mockKV{
+		deleteFn: func(_ context.Context, _ string, _ ...jetstream.KVDeleteOpt) error {
+			return nil
+		},
+		watchFn: func(_ context.Context, _ string, _ ...jetstream.WatchOpt) (jetstream.KeyWatcher, error) {
+			return &mockWatcher{ch: watchCh}, nil
+		},
+	}
+	actor, cancel := newTestActor(kv)
+	defer cancel()
+	defer actor.Stop()
+
+	actor.Subscribe(context.Background(), "test.*",
+		func(m testMeta) bool { return m.Type == "TIMEOUT_VISIT_RESOURCE" },
+		func(_ context.Context, _ string, _ testMeta) { visitCalled.Store(true) },
+	)
+	actor.Subscribe(context.Background(), "test.*",
+		func(m testMeta) bool { return m.Type == "TIMEOUT_ATTACH_RECEIPT" },
+		func(_ context.Context, key string, _ testMeta) { receiptCh <- key },
+	)
+
+	// First: entry with VISIT_RESOURCE, expiring in 500ms.
+	watchCh <- &mockEntry{
+		key: "test.1", value: mustMarshalPayload(t, time.Now().Add(500*time.Millisecond), testMeta{Type: "TIMEOUT_VISIT_RESOURCE"}),
+		revision: 1, operation: jetstream.KeyValuePut,
+	}
+	time.Sleep(50 * time.Millisecond)
+
+	// Overwrite with ATTACH_RECEIPT, expiring in 50ms (sooner).
+	watchCh <- &mockEntry{
+		key: "test.1", value: mustMarshalPayload(t, time.Now().Add(50*time.Millisecond), testMeta{Type: "TIMEOUT_ATTACH_RECEIPT"}),
+		revision: 2, operation: jetstream.KeyValuePut,
+	}
+
+	select {
+	case key := <-receiptCh:
+		if key != "test.1" {
+			t.Errorf("receipt callback key = %q, want test.1", key)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("timeout waiting for receipt callback")
+	}
+
+	// VISIT callback should NOT have fired (timer was replaced before its rev=1 could succeed).
+	if visitCalled.Load() {
+		t.Error("visit callback should NOT have fired after overwrite")
+	}
+}
+
+func TestSubscribe_WildcardMatch(t *testing.T) {
+	// nil match function = wildcard (matches everything).
+	watchCh := make(chan jetstream.KeyValueEntry, 10)
+	callbackCh := make(chan testMeta, 1)
+
+	kv := &mockKV{
+		deleteFn: func(_ context.Context, _ string, _ ...jetstream.KVDeleteOpt) error {
+			return nil
+		},
+		watchFn: func(_ context.Context, _ string, _ ...jetstream.WatchOpt) (jetstream.KeyWatcher, error) {
+			return &mockWatcher{ch: watchCh}, nil
+		},
+	}
+	actor, cancel := newTestActor(kv)
+	defer cancel()
+	defer actor.Stop()
+
+	// Wildcard subscriber (nil match).
+	actor.Subscribe(context.Background(), "test.*", nil, func(_ context.Context, _ string, m testMeta) {
+		callbackCh <- m
+	})
+
+	watchCh <- &mockEntry{
+		key: "test.1", value: mustMarshalPayload(t, time.Now().Add(50*time.Millisecond), testMeta{Type: "ANY_TYPE"}),
+		revision: 1, operation: jetstream.KeyValuePut,
+	}
+
+	select {
+	case meta := <-callbackCh:
+		if meta.Type != "ANY_TYPE" {
+			t.Errorf("meta.Type = %q, want ANY_TYPE", meta.Type)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("timeout waiting for wildcard callback")
+	}
+}
+
+// ===========================================================================
 // Tests: Stop
 // ===========================================================================
 
@@ -633,9 +837,7 @@ func TestStop_CancelsTimers(t *testing.T) {
 	actor, _ := newTestActor(kv)
 
 	// Manually schedule a timer.
-	actor.scheduleTimer("key", 1, time.Hour, func(_ context.Context, _ string) {
-		t.Error("timer should have been cancelled")
-	})
+	actor.scheduleTimer("key", 1, time.Hour, testMeta{})
 
 	actor.Stop()
 
@@ -657,7 +859,7 @@ func TestStop_StopsWatchers(t *testing.T) {
 		},
 	}
 	actor, _ := newTestActor(kv)
-	actor.Subscribe(context.Background(), ">", func(_ context.Context, _ string) {})
+	actor.Subscribe(context.Background(), ">", nil, func(_ context.Context, _ string, _ testMeta) {})
 
 	time.Sleep(50 * time.Millisecond) // let goroutine start
 	actor.Stop()
@@ -678,7 +880,7 @@ func TestStop_WaitsForGoroutines(t *testing.T) {
 		},
 	}
 	actor, _ := newTestActor(kv)
-	actor.Subscribe(context.Background(), ">", func(_ context.Context, _ string) {})
+	actor.Subscribe(context.Background(), ">", nil, func(_ context.Context, _ string, _ testMeta) {})
 
 	time.Sleep(50 * time.Millisecond)
 
@@ -703,13 +905,14 @@ func TestStop_WaitsForGoroutines(t *testing.T) {
 func TestHold_CASUpdateBumpsRevision(t *testing.T) {
 	// Hold should do a CAS update that pushes expiry far into the future.
 	originalExpiry := time.Now().Add(5 * time.Minute)
+	originalMeta := testMeta{Type: "TIMEOUT_VISIT_RESOURCE"}
 	var updatedValue []byte
 	var updatedWithRev uint64
 
 	kv := &mockKV{
 		getFn: func(_ context.Context, key string) (jetstream.KeyValueEntry, error) {
 			return &mockEntry{
-				key: key, value: marshalTime(originalExpiry),
+				key: key, value: mustMarshalPayload(t, originalExpiry, originalMeta),
 				revision: 1, operation: jetstream.KeyValuePut,
 			}, nil
 		},
@@ -736,13 +939,19 @@ func TestHold_CASUpdateBumpsRevision(t *testing.T) {
 	}
 
 	// Verify the new expiry is far in the future (close to MaxHoldDuration).
-	newExpiry, err := unmarshalTime(updatedValue)
+	p, err := unmarshalPayload[testMeta](updatedValue)
 	if err != nil {
 		t.Fatal(err)
 	}
+	newExpiry := time.Unix(0, p.ExpiresAt)
 	expectedHoldExpiry := time.Now().Add(10 * time.Minute)
 	if newExpiry.Before(expectedHoldExpiry.Add(-5 * time.Second)) {
 		t.Errorf("hold expiry %v is too early, expected ~%v", newExpiry, expectedHoldExpiry)
+	}
+
+	// Verify metadata was preserved.
+	if p.Metadata.Type != "TIMEOUT_VISIT_RESOURCE" {
+		t.Errorf("hold preserved metadata.Type = %q, want TIMEOUT_VISIT_RESOURCE", p.Metadata.Type)
 	}
 }
 
@@ -755,7 +964,7 @@ func TestHold_InvalidatesAllTimers(t *testing.T) {
 	kv := &mockKV{
 		getFn: func(_ context.Context, key string) (jetstream.KeyValueEntry, error) {
 			return &mockEntry{
-				key: key, value: marshalTime(originalExpiry),
+				key: key, value: mustMarshalPayload(t, originalExpiry, testMeta{}),
 				revision: 1, operation: jetstream.KeyValuePut,
 			}, nil
 		},
@@ -771,10 +980,14 @@ func TestHold_InvalidatesAllTimers(t *testing.T) {
 	actor, cancel := newTestActor(kv)
 	defer cancel()
 
-	// Schedule a timer with rev=1 that expires in 50ms.
-	actor.scheduleTimer("key", 1, 50*time.Millisecond, func(_ context.Context, _ string) {
-		callbackCalled.Store(true)
+	actor.mu.Lock()
+	actor.subscribers = append(actor.subscribers, subscriber[testMeta]{
+		Callback: func(_ context.Context, _ string, _ testMeta) { callbackCalled.Store(true) },
 	})
+	actor.mu.Unlock()
+
+	// Schedule a timer with rev=1 that expires in 50ms.
+	actor.scheduleTimer("key", 1, 50*time.Millisecond, testMeta{})
 
 	// Hold the key — this bumps revision to 2.
 	holdCtx, holdCancel := context.WithCancel(context.Background())
@@ -806,7 +1019,7 @@ func TestHold_SeamlessTransition(t *testing.T) {
 		getFn: func(_ context.Context, key string) (jetstream.KeyValueEntry, error) {
 			rev := currentRev.Load()
 			return &mockEntry{
-				key: key, value: marshalTime(originalExpiry),
+				key: key, value: mustMarshalPayload(t, originalExpiry, testMeta{}),
 				revision: rev, operation: jetstream.KeyValuePut,
 			}, nil
 		},
@@ -850,6 +1063,7 @@ func TestHold_RestoresOnFailure(t *testing.T) {
 	// When hold releases without Add() (transaction failed), the original
 	// expiry should be restored.
 	originalExpiry := time.Now().Add(5 * time.Minute)
+	meta := testMeta{Type: "TIMEOUT_VISIT_RESOURCE"}
 
 	var currentRev atomic.Uint64
 	currentRev.Store(1)
@@ -861,7 +1075,7 @@ func TestHold_RestoresOnFailure(t *testing.T) {
 		getFn: func(_ context.Context, key string) (jetstream.KeyValueEntry, error) {
 			rev := currentRev.Load()
 			return &mockEntry{
-				key: key, value: marshalTime(originalExpiry),
+				key: key, value: mustMarshalPayload(t, originalExpiry, meta),
 				revision: rev, operation: jetstream.KeyValuePut,
 			}, nil
 		},
@@ -892,13 +1106,17 @@ func TestHold_RestoresOnFailure(t *testing.T) {
 		t.Errorf("restore CAS used rev=%d, want 2", restoredWithRev)
 	}
 
-	// Verify original expiry was restored.
-	restored, err := unmarshalTime(restoredValue)
+	// Verify original expiry and metadata were restored.
+	restored, err := unmarshalPayload[testMeta](restoredValue)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !restored.Equal(originalExpiry) {
-		t.Errorf("restored expiry = %v, want %v", restored, originalExpiry)
+	restoredExpiry := time.Unix(0, restored.ExpiresAt)
+	if !restoredExpiry.Equal(originalExpiry) {
+		t.Errorf("restored expiry = %v, want %v", restoredExpiry, originalExpiry)
+	}
+	if restored.Metadata.Type != "TIMEOUT_VISIT_RESOURCE" {
+		t.Errorf("restored metadata.Type = %q, want TIMEOUT_VISIT_RESOURCE", restored.Metadata.Type)
 	}
 }
 
@@ -925,7 +1143,7 @@ func TestHold_CASConflict(t *testing.T) {
 	kv := &mockKV{
 		getFn: func(_ context.Context, key string) (jetstream.KeyValueEntry, error) {
 			return &mockEntry{
-				key: key, value: marshalTime(time.Now().Add(time.Minute)),
+				key: key, value: mustMarshalPayload(t, time.Now().Add(time.Minute), testMeta{}),
 				revision: 1, operation: jetstream.KeyValuePut,
 			}, nil
 		},
@@ -957,7 +1175,7 @@ func TestHold_KeyDeletedDuringHold(t *testing.T) {
 			if getCallCount == 1 {
 				// First call: Hold reads the current entry.
 				return &mockEntry{
-					key: key, value: marshalTime(originalExpiry),
+					key: key, value: mustMarshalPayload(t, originalExpiry, testMeta{}),
 					revision: 1, operation: jetstream.KeyValuePut,
 				}, nil
 			}
@@ -999,7 +1217,7 @@ func TestHold_WithSubscribe_FullFlow(t *testing.T) {
 		getFn: func(_ context.Context, key string) (jetstream.KeyValueEntry, error) {
 			rev := currentRev.Load()
 			return &mockEntry{
-				key: key, value: marshalTime(originalExpiry),
+				key: key, value: mustMarshalPayload(t, originalExpiry, testMeta{}),
 				revision: rev, operation: jetstream.KeyValuePut,
 			}, nil
 		},
@@ -1020,13 +1238,13 @@ func TestHold_WithSubscribe_FullFlow(t *testing.T) {
 	defer cancel()
 	defer actor.Stop()
 
-	actor.Subscribe(context.Background(), "test.*", func(_ context.Context, key string) {
+	actor.Subscribe(context.Background(), "test.*", nil, func(_ context.Context, key string, _ testMeta) {
 		callbackCh <- key
 	})
 
 	// Step 1: Send an entry expiring in 50ms (rev=1).
 	watchCh <- &mockEntry{
-		key: "test.1", value: marshalTime(originalExpiry),
+		key: "test.1", value: mustMarshalPayload(t, originalExpiry, testMeta{}),
 		revision: 1, operation: jetstream.KeyValuePut,
 	}
 	time.Sleep(20 * time.Millisecond) // let watcher schedule the timer

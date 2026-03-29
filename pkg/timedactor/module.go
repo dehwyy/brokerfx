@@ -7,24 +7,26 @@ import (
 	"go.uber.org/fx"
 )
 
-// Module provides the TimedActor distributed timer as an fx.Module.
-// It registers TimedActor as a provider and manages its lifecycle
-// (graceful shutdown) via fx.Lifecycle.
+// Module creates an fx.Module that provides a TimedActor[T] instance.
 //
-// Required dependencies in the fx container:
-//   - jetstream.JetStream
+// Since TimedActor is generic, the module must be parameterized with the
+// metadata type T. Usage:
 //
-// Optional dependencies:
-//   - timedactor.Config (falls back to DefaultConfig if not provided)
-var Module = fx.Module("timedactor",
-	fx.Provide(New),
-	fx.Invoke(registerLifecycle),
-)
+//	fx.New(
+//	    timedactor.Module[MyMetadata](),
+//	    // ...
+//	)
+func Module[T any]() fx.Option {
+	return fx.Module("timedactor",
+		fx.Provide(New[T]),
+		fx.Invoke(registerLifecycle[T]),
+	)
+}
 
 // registerLifecycle hooks TimedActor into the fx application lifecycle.
 // OnStop cancels all background goroutines started by Subscribe and waits
 // for them to drain gracefully via sync.WaitGroup.
-func registerLifecycle(lc fx.Lifecycle, actor *TimedActor) {
+func registerLifecycle[T any](lc fx.Lifecycle, actor *TimedActor[T]) {
 	lc.Append(fx.Hook{
 		OnStart: func(_ context.Context) error {
 			log.Info().Msg("timed-actor lifecycle started")

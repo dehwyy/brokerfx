@@ -24,6 +24,12 @@ type Config struct {
 	// is active, the timeout will fire after this duration (acting as a
 	// safety net). Default: 30s.
 	MaxHoldDuration time.Duration
+
+	// BucketTTL specifies how long keys should permanently remain in the
+	// NATS KV store before automatic expiration (garbage collection).
+	// This acts as a fallback to prevent infinite growth of the bucket
+	// from "orphaned" keys. Default: 48h.
+	BucketTTL time.Duration
 }
 
 // DefaultConfig returns a Config with sensible defaults.
@@ -32,6 +38,7 @@ func DefaultConfig() Config {
 		BucketName:      "TimedActorBucket",
 		CheckInterval:   15 * time.Second,
 		MaxHoldDuration: 30 * time.Second,
+		BucketTTL:       48 * time.Hour,
 	}
 }
 

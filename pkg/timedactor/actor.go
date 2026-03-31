@@ -45,6 +45,9 @@ type TimedActor[T any] struct {
 	// watchers tracks all opened KV watchers so they can be stopped on shutdown.
 	watchers []jetstream.KeyWatcher
 
+	// activeWatchers tracks which eventKeys already have a running watcher goroutine.
+	activeWatchers map[string]struct{}
+
 	// wg tracks background goroutines started by Subscribe and Hold for
 	// graceful shutdown.
 	wg sync.WaitGroup
@@ -88,6 +91,7 @@ func New[T any](deps Deps) (*TimedActor[T], error) {
 	kv, err := deps.JS.CreateOrUpdateKeyValue(ctx, jetstream.KeyValueConfig{
 		Bucket:  cfg.BucketName,
 		Storage: jetstream.MemoryStorage,
+		TTL:     cfg.BucketTTL,
 	})
 	if err != nil {
 		return nil, err
@@ -99,8 +103,9 @@ func New[T any](deps Deps) (*TimedActor[T], error) {
 		kv:     kv,
 		logger: log.With().Str("component", "timed-actor").Logger(),
 		config: cfg,
-		timers: make(map[string]*time.Timer),
-		cancel: cancel,
+		timers:         make(map[string]*time.Timer),
+		activeWatchers: make(map[string]struct{}),
+		cancel:         cancel,
 		ctx:    rootCtx,
 	}, nil
 }
@@ -363,7 +368,19 @@ func (ta *TimedActor[T]) Subscribe(ctx context.Context, eventKey string, match f
 		Match:    match,
 		Callback: callback,
 	})
+
+	alreadyWatching := false
+	if _, ok := ta.activeWatchers[eventKey]; ok {
+		alreadyWatching = true
+	} else {
+		ta.activeWatchers[eventKey] = struct{}{}
+	}
 	ta.mu.Unlock()
+
+	if alreadyWatching {
+		ta.logger.Info().Str("event_key", eventKey).Msg("watcher already registered for this pattern, skipping redundant watcher")
+		return
+	}
 
 	ta.wg.Add(1)
 

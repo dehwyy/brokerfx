@@ -116,9 +116,10 @@ func newTestActor(kv jetstream.KeyValue) (*TimedActor[testMeta], context.CancelF
 			CheckInterval:   1 * time.Hour, // effectively disable rescan ticker
 			MaxHoldDuration: 10 * time.Minute,
 		},
-		timers: make(map[string]*time.Timer),
-		ctx:    ctx,
-		cancel: cancel,
+		timers:         make(map[string]*time.Timer),
+		activeWatchers: make(map[string]struct{}),
+		ctx:            ctx,
+		cancel:         cancel,
 	}, cancel
 }
 

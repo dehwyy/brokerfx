@@ -39,29 +39,50 @@ func New(opts Opts) (*Consumer, error) {
 		func(msg jetstream.Msg) {
 			go func() {
 				log.Debug().Any("subject", msg.Subject()).Msg("nats message received")
-				if r := recover(); r != nil {
-					log.Error().Msgf("panic: %v", r)
-				}
+				defer func() {
+					if r := recover(); r != nil {
+						log.Error().
+							Str("subject", msg.Subject()).
+							Any("panic", r).
+							Msg("consumer handler panic — NAK for redelivery")
+						if nakErr := msg.Nak(); nakErr != nil {
+							log.Error().Err(nakErr).Msg("failed to NAK after panic")
+						}
+					}
+				}()
 
 				ctx := context.Background()
 				var err error
 				for _, middleware := range opts.BeforeHandlerMiddleware {
 					ctx, err = middleware(ctx, msg)
 					if err != nil {
-						log.Error().Err(err).Msg("error in before handler middleware")
+						log.Error().Err(err).Msg("error in before handler middleware — NAK for redelivery")
+						if nakErr := msg.Nak(); nakErr != nil {
+							log.Error().Err(nakErr).Msg("failed to NAK after middleware error")
+						}
 						return
 					}
 				}
 
-				msg.Ack()
+				// Handler is authoritative: Ack only on success, Nak on error so JetStream
+				// redelivers the message. Handlers MUST be idempotent — Nats-Msg-Id dedup
+				// on the producer side bounds the replay risk to the Duplicates window.
 				if err = opts.HandlerFunc(ctx, msg); err != nil {
-					log.Error().Err(err).Msg("error handling message")
+					log.Error().Err(err).Str("subject", msg.Subject()).Msg("handler failed — NAK for redelivery")
+					if nakErr := msg.Nak(); nakErr != nil {
+						log.Error().Err(nakErr).Msg("failed to NAK after handler error")
+					}
+					return
+				}
+
+				if ackErr := msg.Ack(); ackErr != nil {
+					log.Error().Err(ackErr).Str("subject", msg.Subject()).Msg("failed to ACK after successful handler")
 				}
 
 				for _, middleware := range opts.AfterHandlerMiddleware {
 					ctx, err = middleware(ctx, msg)
 					if err != nil {
-						log.Error().Err(err).Msg("error in after handler middleware")
+						log.Error().Err(err).Msg("error in after handler middleware (message already acked)")
 						return
 					}
 				}

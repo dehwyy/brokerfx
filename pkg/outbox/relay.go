@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
@@ -165,8 +166,18 @@ func (r *OutboxRelay) processBatch() {
 		// Capture loop variable
 		event := ev
 
-		// PublishAsync returns a PubAckFuture
-		future, err := r.js.PublishAsync(event.Topic, event.Payload)
+		// Use outbox event id as Nats-Msg-Id so JetStream dedups a redelivered publish
+		// (e.g. after a crash between NATS ack and DB state update) within the stream's
+		// Duplicates window.
+		msg := &nats.Msg{
+			Subject: event.Topic,
+			Data:    event.Payload,
+			Header: nats.Header{
+				jetstream.MsgIDHeader: []string{event.ID},
+			},
+		}
+
+		future, err := r.js.PublishMsgAsync(msg)
 		if err != nil {
 			results <- pubResult{id: event.ID, err: err}
 			continue

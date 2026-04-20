@@ -20,6 +20,10 @@ func NewDefault() *StreamOptsBuilder {
 			MaxMsgsPerSubject: 1_000,
 			Compression:       jetstream.S2Compression,
 			Replicas:          1,
+			// Duplicates enables JetStream server-side dedup via Nats-Msg-Id: within this
+			// window the server suppresses a second publish with the same id. Must be smaller
+			// than MaxAge so old dedup records don't outlive the messages they protect.
+			Duplicates: 5 * time.Minute,
 		},
 	}
 }
@@ -120,5 +124,14 @@ func (b *StreamOptsBuilder) WithRetentionPolicy(
 	retention jetstream.RetentionPolicy,
 ) *StreamOptsBuilder {
 	b.config.Retention = retention
+	return b
+}
+
+// WithDuplicates sets the deduplication window: publishes sharing a Nats-Msg-Id value
+// within this window are coalesced server-side. Pass 0 to disable dedup entirely.
+func (b *StreamOptsBuilder) WithDuplicates(
+	window time.Duration,
+) *StreamOptsBuilder {
+	b.config.Duplicates = window
 	return b
 }

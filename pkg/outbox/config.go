@@ -4,7 +4,6 @@ import (
 	"time"
 
 	"github.com/dehwyy/txmanagerfx/pkg/txmanager"
-	"github.com/nats-io/nats.go/jetstream"
 	"go.uber.org/fx"
 	"gorm.io/gorm"
 )
@@ -50,7 +49,7 @@ type StoreDeps struct {
 type RelayDeps struct {
 	fx.In
 
-	Store  *OutboxStore
-	JS     jetstream.JetStream
-	Config Config `optional:"true"`
+	Store    *OutboxStore
+	Producer Producer
+	Config   Config `optional:"true"`
 }

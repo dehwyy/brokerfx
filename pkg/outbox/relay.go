@@ -4,7 +4,6 @@ import (
 	"context"
 	"time"
 
-	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
@@ -13,13 +12,13 @@ import (
 )
 
 // OutboxRelay is a background worker that reads uncommitted outbox events from PostgreSQL
-// and publishes them to NATS JetStream. It reacts to wakeup signals from the store
+// and publishes them via a Producer. It reacts to wakeup signals from the store
 // for immediate processing and uses a fallback ticker as a safety net.
 type OutboxRelay struct {
-	store  *OutboxStore
-	js     jetstream.JetStream
-	logger zerolog.Logger
-	config Config
+	store    *OutboxStore
+	producer Producer
+	logger   zerolog.Logger
+	config   Config
 
 	cancel context.CancelFunc
 	done   chan struct{}
@@ -33,11 +32,11 @@ func NewRelay(deps RelayDeps) *OutboxRelay {
 	}
 
 	r := &OutboxRelay{
-		store:  deps.Store,
-		js:     deps.JS,
-		logger: log.With().Str("component", "outbox-relay").Logger(),
-		config: cfg,
-		done:   make(chan struct{}),
+		store:    deps.Store,
+		producer: deps.Producer,
+		logger:   log.With().Str("component", "outbox-relay").Logger(),
+		config:   cfg,
+		done:     make(chan struct{}),
 	}
 
 	return r
@@ -71,13 +70,13 @@ func (r *OutboxRelay) Run(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			r.logger.Info().Msg("outbox relay stopping, processing final batch")
-			r.processBatch()
+			r.processBatch(ctx)
 			r.logger.Info().Msg("outbox relay stopped")
 			return
 		case <-r.store.WakeupChan():
-			r.processBatch()
+			r.processBatch(ctx)
 		case <-ticker.C:
-			r.processBatch()
+			r.processBatch(ctx)
 		case <-cleanupChan:
 			r.cleanupDone()
 		}
@@ -101,8 +100,8 @@ func (r *OutboxRelay) cleanupDone() {
 }
 
 // processBatch fetches a batch of outbox events, marks them as IN_FLIGHT,
-// publishes each to NATS JetStream asynchronously, waits for ACKs, and updates the states.
-func (r *OutboxRelay) processBatch() {
+// publishes each via the Producer concurrently, and updates the states.
+func (r *OutboxRelay) processBatch(ctx context.Context) {
 	db := r.store.DB()
 
 	var events []OutboxEvent
@@ -120,7 +119,6 @@ func (r *OutboxRelay) processBatch() {
 			Where("state = ?", StatePending).
 			Or("state = ? AND updated_at < ?", StateInFlight, stalledThreshold).
 			Order("created_at ASC").
-			// Preload("Retries").
 			Limit(r.config.BatchSize).
 			Find(&events).Error
 
@@ -132,13 +130,11 @@ func (r *OutboxRelay) processBatch() {
 			return nil
 		}
 
-		// Collect IDs to mark as IN_FLIGHT
 		ids := make([]string, len(events))
 		for i, ev := range events {
 			ids[i] = ev.ID
 		}
 
-		// Update state to IN_FLIGHT
 		return tx.Model(&OutboxEvent{}).
 			Where("id IN ?", ids).
 			Update("state", StateInFlight).Error
@@ -163,37 +159,26 @@ func (r *OutboxRelay) processBatch() {
 	results := make(chan pubResult, len(events))
 
 	for _, ev := range events {
-		// Capture loop variable
 		event := ev
 
-		// Use outbox event id as Nats-Msg-Id so JetStream dedups a redelivered publish
-		// (e.g. after a crash between NATS ack and DB state update) within the stream's
-		// Duplicates window.
-		msg := &nats.Msg{
-			Subject: event.Topic,
-			Data:    event.Payload,
-			Header: nats.Header{
-				jetstream.MsgIDHeader: []string{event.ID},
-			},
-		}
-
-		future, err := r.js.PublishMsgAsync(msg)
-		if err != nil {
-			results <- pubResult{id: event.ID, err: err}
-			continue
-		}
-
-		// Wait for the future in a goroutine
-		go func(id string, f jetstream.PubAckFuture) {
-			select {
-			case <-f.Ok():
-				results <- pubResult{id: id, err: nil}
-			case err := <-f.Err():
-				results <- pubResult{id: id, err: err}
-			case <-time.After(30 * time.Second): // timeout safety
-				results <- pubResult{id: id, err: context.DeadlineExceeded}
+		go func() {
+			producerEvent := ProducerEvent{
+				Subject: event.Topic,
+				Headers: map[string]string{
+					// Use outbox event id as Nats-Msg-Id so JetStream dedups a redelivered
+					// publish (e.g. after a crash between ack and DB state update) within
+					// the stream's Duplicates window. Core NATS ignores it.
+					jetstream.MsgIDHeader: event.ID,
+				},
+				Payload: event.Payload,
 			}
-		}(event.ID, future)
+
+			pubErr := r.producer.Produce(ctx, producerEvent)
+			results <- pubResult{
+				id:  event.ID,
+				err: pubErr,
+			}
+		}()
 	}
 
 	var successIDs []string
@@ -205,14 +190,13 @@ func (r *OutboxRelay) processBatch() {
 			r.logger.Error().
 				Err(res.err).
 				Str("event_id", res.id).
-				Msg("failed to publish outbox event to NATS")
+				Msg("failed to publish outbox event")
 			failedOutcomes = append(failedOutcomes, res)
 		} else {
 			successIDs = append(successIDs, res.id)
 		}
 	}
 
-	// Process outcomes
 	if len(failedOutcomes) > 0 {
 		failedIDs := make([]string, len(failedOutcomes))
 		retries := make([]OutboxRetry, len(failedOutcomes))
@@ -227,7 +211,6 @@ func (r *OutboxRelay) processBatch() {
 		log.Debug().
 			Int("count", len(failedIDs)).
 			Msg("reverting failed events to PENDING")
-		// Revert failed IDs back to PENDING. Use plain DB without tx to release pool
 		if err := db.Model(&OutboxEvent{}).Where("id IN ?", failedIDs).Update("state", StatePending).Error; err != nil {
 			r.logger.Error().Err(err).Int("count", len(failedIDs)).Msg("failed to revert failed events to PENDING")
 		}

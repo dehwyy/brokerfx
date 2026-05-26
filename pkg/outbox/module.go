@@ -14,7 +14,25 @@ import (
 // Required dependencies in the fx container:
 //   - *gorm.DB (with PostgreSQL driver configured)
 //   - jetstream.JetStream
+//
+// Producer is wired from JetStream by default; supply CoreModule (or your own
+// fx.Provide for outbox.Producer) to publish via plain NATS instead.
 var Module = fx.Module("outbox",
+	fx.Provide(NewStore),
+	fx.Provide(
+		fx.Annotate(
+			NewJetStreamProducer,
+			fx.As(new(Producer)),
+		),
+	),
+	fx.Provide(NewRelay),
+	fx.Invoke(registerRelayLifecycle),
+)
+
+// CoreModule is an alternate composition that omits the default JetStream
+// Producer binding. Use it when the application supplies its own Producer
+// (for example brokerfx/pkg/nats/core.CoreProducer) via fx.Provide.
+var CoreModule = fx.Module("outbox-core",
 	fx.Provide(NewStore),
 	fx.Provide(NewRelay),
 	fx.Invoke(registerRelayLifecycle),

@@ -26,13 +26,29 @@ type Consumer struct {
 }
 
 func New(opts Opts) (*Consumer, error) {
+	cfg := opts.ConsumerOptsBuilder.Build()
 	consumer, err := opts.JetStream.CreateOrUpdateConsumer(
 		context.Background(),
 		opts.Stream.Name(),
-		opts.ConsumerOptsBuilder.Build(),
+		cfg,
 	)
 	if err != nil {
-		return nil, err
+		// On WorkQueue streams a consumer's filter must be unique, so an existing
+		// durable cannot be re-created/updated with a changed config (server returns
+		// "filtered consumer not unique"). Fall back to binding the existing consumer.
+		name := cfg.Name
+		if name == "" {
+			name = cfg.Durable
+		}
+		existing, getErr := opts.JetStream.Consumer(
+			context.Background(),
+			opts.Stream.Name(),
+			name,
+		)
+		if getErr != nil {
+			return nil, err
+		}
+		consumer = existing
 	}
 
 	consumeCtx, err := consumer.Consume(

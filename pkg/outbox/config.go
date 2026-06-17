@@ -26,6 +26,17 @@ type Config struct {
 	BatchSize       int
 	TickInterval    time.Duration
 	DeleteOlderThan time.Duration
+
+	// StallThreshold is how long an IN_FLIGHT row may sit before the relay re-picks
+	// and re-publishes it (covers a crash between NATS ack and the DB state update).
+	//
+	// INVARIANT: the stream Duplicates window MUST be >= 2*StallThreshold. The relay
+	// re-publishes with Nats-Msg-Id = row.ID; if the dedup window were not at least
+	// twice the stall threshold, the re-publish could land exactly as the server-side
+	// dedup record expires, so the duplicate would NOT be suppressed and the consumer
+	// would process the event twice. With 2x headroom the re-publish always lands well
+	// inside a live dedup window. Defaults: StallThreshold 5m, Duplicates 15m.
+	StallThreshold time.Duration
 }
 
 func DefaultConfig() Config {
@@ -34,6 +45,7 @@ func DefaultConfig() Config {
 		BatchSize:       100,
 		TickInterval:    2 * time.Second,
 		DeleteOlderThan: 1 * time.Hour, // relevant only for UpdateAfterSend mode
+		StallThreshold:  5 * time.Minute,
 	}
 }
 

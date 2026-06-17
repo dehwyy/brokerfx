@@ -22,8 +22,10 @@ func NewDefault() *StreamOptsBuilder {
 			Replicas:          1,
 			// Duplicates enables JetStream server-side dedup via Nats-Msg-Id: within this
 			// window the server suppresses a second publish with the same id. Must be smaller
-			// than MaxAge so old dedup records don't outlive the messages they protect.
-			Duplicates: 5 * time.Minute,
+			// than MaxAge so old dedup records don't outlive the messages they protect, and
+			// MUST be >= 2x the outbox relay StallThreshold (default 5m) so a re-published
+			// stalled row always lands inside a live dedup window — see outbox.Config.
+			Duplicates: 15 * time.Minute,
 		},
 	}
 }

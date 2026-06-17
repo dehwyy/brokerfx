@@ -187,13 +187,17 @@ producer.Produce(&OrderCreatedEvent{orderID: "123", payload: p})
 
 #### Consumer
 
-Creates a durable JetStream consumer and starts a subscription loop. Messages are ack'd **before** the handler runs (safe for exactly-once processing). Panics are recovered per-message.
+Creates a durable JetStream consumer and starts a subscription loop. The handler is authoritative: the message is **Ack'd on success and Nak'd on error** (redelivery). Panics are recovered per-message and Nak'd.
+
+While the handler runs, the consumer sends `msg.InProgress()` on a 5s ticker to keep extending the ack deadline (`AckWait`, default 30s), so a slow money-path handler (tx + gRPC) is not redelivered to a second goroutine before it finishes.
 
 **Middleware execution order:**
 
 ```
-BeforeMiddleware → ACK → Handler → AfterMiddleware
+BeforeMiddleware → Handler (with InProgress heartbeat) → ACK → AfterMiddleware
 ```
+
+Handlers **MUST be idempotent**: producer-side `Nats-Msg-Id` dedup bounds replay to the stream `Duplicates` window, but redelivery on Nak/restart is still possible. For consumers that are not already idempotent downstream, use the opt-in [consume-side idempotency helper](#consume-side-idempotency).
 
 **Usage:**
 
@@ -263,6 +267,46 @@ drainer.Append(consumer1.Context(), consumer2.Context())
 drainer.Drain() // waits for all consumers to finish in-flight messages
 ```
 
+#### Consume-side idempotency
+
+`WithIdempotency` is an **opt-in** handler wrapper that dedups at consume time within
+the consumer's own transaction. It is for new/other consumers that are not already
+idempotent via downstream idem-keys — existing money consumers (ledger) already are,
+so their behavior is unchanged.
+
+For each message it opens one transaction (via `txmanager`) and:
+
+- if the dedup key already exists in `processed_messages` → **Ack without running** the
+  business handler;
+- otherwise runs the handler, then inserts the dedup row — both in the **same
+  transaction**, so the side effects and the dedup marker commit atomically (a handler
+  error rolls back the marker and triggers Nak/redelivery).
+
+The dedup key defaults to the `Nats-Msg-Id` header, falling back to a deterministic
+`sha256(subject + payload)` when the header is absent. The wrapped handler must use
+`txmanager.GetConnection(ctx)` for its own writes so they share the transaction.
+
+```go
+import jscons "github.com/dehwyy/brokerfx/pkg/nats/jetstream/consumer"
+
+// Once at startup (mirrors outbox.AutoMigrate):
+if err := jscons.AutoMigrateProcessed(db); err != nil {
+    log.Fatal(err)
+}
+
+handler := jscons.WithIdempotency(
+    txManager,
+    nil, // nil → DefaultIdempotencyKey (Nats-Msg-Id, fallback hash)
+    func(ctx context.Context, msg jetstream.Msg) error {
+        return processOrder(ctx, msg) // writes via txManager.GetConnection(ctx)
+    },
+)
+
+// pass `handler` as Opts.HandlerFunc
+```
+
+`processed_messages` columns: `message_id` (PK), `subject`, `processed_at`.
+
 #### Stream
 
 Creates or updates a JetStream stream at startup. Wraps `CreateOrUpdateStream` with a fluent builder.
@@ -302,6 +346,12 @@ fx.Provide(
 | MaxMsgsPerSubject | `1,000` |
 | Compression | `S2Compression` |
 | Replicas | `1` |
+| Duplicates | `15 minutes` |
+
+> **Dedup invariant:** the `Duplicates` window must be `>= 2 ×` the outbox relay
+> `StallThreshold` (default 5m). The relay re-publishes a stalled IN_FLIGHT row with
+> `Nats-Msg-Id = row.ID`; with 2× headroom the re-publish always lands inside a live
+> dedup window, so the duplicate is suppressed. Keep `Duplicates < MaxAge`.
 
 ---
 
@@ -406,8 +456,9 @@ func (s *Service) CreateOrder(ctx context.Context, req *CreateOrderRequest) erro
 | `BatchSize` | `int` | `100` | Max events per relay cycle |
 | `TickInterval` | `time.Duration` | `2s` | Relay polling interval |
 | `DeleteOlderThan` | `time.Duration` | `1h` | Cleanup threshold (UpdateAfterSend only) |
+| `StallThreshold` | `time.Duration` | `5m` | Age after which an IN_FLIGHT row is re-picked |
 
-**Stall recovery:** Events stuck in `IN_FLIGHT` for more than 5 minutes are automatically reverted to `PENDING` on the next relay cycle (handles relay crashes mid-batch).
+**Stall recovery:** Events stuck in `IN_FLIGHT` past `StallThreshold` (default 5 minutes) are re-picked and re-published on the next relay cycle (handles a crash between NATS ack and the DB state update). The re-publish carries `Nats-Msg-Id = row.ID`, so the stream `Duplicates` window suppresses the duplicate — which is why `Duplicates` must be `>= 2 × StallThreshold` (see Stream defaults).
 
 ---
 

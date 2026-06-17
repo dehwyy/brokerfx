@@ -30,6 +30,11 @@ func NewRelay(deps RelayDeps) *OutboxRelay {
 	if cfg.Mode == "" {
 		cfg = DefaultConfig()
 	}
+	// Guard the stall invariant: a zero threshold would re-pick every IN_FLIGHT row
+	// on each tick. Fall back to the default so callers that set only Mode are safe.
+	if cfg.StallThreshold <= 0 {
+		cfg.StallThreshold = DefaultConfig().StallThreshold
+	}
 
 	r := &OutboxRelay{
 		store:    deps.Store,
@@ -108,8 +113,9 @@ func (r *OutboxRelay) processBatch(ctx context.Context) {
 
 	// Open a transaction to lock and update the rows to IN_FLIGHT
 	err := db.Transaction(func(tx *gorm.DB) error {
-		// Find events that are PENDING, or IN_FLIGHT but stalled for > 5 mins
-		stalledThreshold := time.Now().Add(-5 * time.Minute)
+		// Find events that are PENDING, or IN_FLIGHT but stalled past the configured
+		// threshold. See Config.StallThreshold for the dedup-window invariant.
+		stalledThreshold := time.Now().Add(-r.config.StallThreshold)
 
 		err := tx.
 			Clauses(clause.Locking{

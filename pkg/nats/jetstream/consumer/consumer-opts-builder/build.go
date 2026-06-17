@@ -13,8 +13,11 @@ type ConsumerOptsBuilder struct {
 func NewDefault() *ConsumerOptsBuilder {
 	return &ConsumerOptsBuilder{
 		config: jetstream.ConsumerConfig{
-			AckPolicy:     jetstream.AckExplicitPolicy,
-			AckWait:       10 * time.Second,
+			AckPolicy: jetstream.AckExplicitPolicy,
+			// AckWait is the upper bound the server waits for an Ack before redelivering.
+			// Money-path handlers (tx + gRPC) can exceed the old 10s; the consumer also
+			// sends msg.InProgress() on a ticker to extend this while a handler runs.
+			AckWait:       30 * time.Second,
 			DeliverPolicy: jetstream.DeliverAllPolicy,
 		},
 	}

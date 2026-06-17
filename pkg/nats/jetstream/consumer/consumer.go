@@ -83,7 +83,9 @@ func New(opts Opts) (*Consumer, error) {
 				// Handler is authoritative: Ack only on success, Nak on error so JetStream
 				// redelivers the message. Handlers MUST be idempotent — Nats-Msg-Id dedup
 				// on the producer side bounds the replay risk to the Duplicates window.
-				if err = opts.HandlerFunc(ctx, msg); err != nil {
+				// runWithHeartbeat keeps the ack lease alive (msg.InProgress) so a slow
+				// handler is not redelivered to a second goroutine before it finishes.
+				if err = runWithHeartbeat(ctx, msg, opts.HandlerFunc); err != nil {
 					log.Error().Err(err).Str("subject", msg.Subject()).Msg("handler failed — NAK for redelivery")
 					if nakErr := msg.Nak(); nakErr != nil {
 						log.Error().Err(nakErr).Msg("failed to NAK after handler error")

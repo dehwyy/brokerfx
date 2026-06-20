@@ -62,12 +62,12 @@ func New(opts Opts) func() (*nc.Conn, error) {
 			panic(err)
 		}
 
-		tt, err := conn.RTT()
-		if err != nil {
-			panic(err)
+		if tt, rttErr := conn.RTT(); rttErr != nil {
+			log.Warn().Err(rttErr).Msg("initial RTT check failed, connection still establishing")
+		} else {
+			log.Info().Dur("RTT", tt).Msg("RoundTripTime received")
 		}
 
-		log.Info().Dur("RTT", tt).Msg("RoundTripTime received")
 		return conn, nil
 	}
 }

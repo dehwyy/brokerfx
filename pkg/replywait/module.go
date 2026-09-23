@@ -22,6 +22,7 @@ func newModuleComponents(deps ModuleDeps) (*ReplyWaiter, *listener, error) {
 	}
 
 	reg := newRegistry()
+	reg.attachObserver(deps.Observer)
 	rw := newReplyWaiter(deps.Config, reg, deps.Waker)
 	l := newListener(deps.JS, deps.Config, reg, deps.Observer)
 	rw.attachListener(l)

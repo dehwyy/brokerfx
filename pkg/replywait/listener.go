@@ -44,7 +44,7 @@ func (l *listener) start(ctx context.Context) error {
 		return fmt.Errorf("replywait: ordered consumer on stream %s: %w", l.cfg.Stream, err)
 	}
 
-	consumeCtx, err := consumer.Consume(l.handle)
+	consumeCtx, err := consumer.Consume(l.handle, jetstream.ConsumeErrHandler(l.handleConsumeErr))
 	if err != nil {
 		return fmt.Errorf("replywait: consume stream %s: %w", l.cfg.Stream, err)
 	}
@@ -54,11 +54,15 @@ func (l *listener) start(ctx context.Context) error {
 	return nil
 }
 
-//nolint:unused
 func (l *listener) stop() {
 	if l.consumeCtx != nil {
 		l.consumeCtx.Stop()
 	}
+}
+
+func (l *listener) handleConsumeErr(_ jetstream.ConsumeContext, err error) {
+	log.Warn().Err(err).Str("stream", l.cfg.Stream).Str("subject", l.cfg.ReplySubject).
+		Msg("replywait: consume error on ordered consumer, self-healing reset in progress")
 }
 
 func (l *listener) handle(msg jetstream.Msg) {

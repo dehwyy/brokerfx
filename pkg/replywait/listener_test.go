@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -11,27 +12,91 @@ import (
 )
 
 type fakeObserver struct {
-	lateIDs  []string
-	rejected []error
+	mu sync.Mutex
+
+	startedIDs  []string
+	resolvedIDs []string
+	timedOutIDs []string
+	drainedIDs  []string
+	lateIDs     []string
+	rejected    []error
+	inflight    []int
 }
 
-func (o *fakeObserver) WaitStarted(string) {}
+func (o *fakeObserver) WaitStarted(correlationID string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.startedIDs = append(o.startedIDs, correlationID)
+}
 
-func (o *fakeObserver) WaitResolved(string, time.Duration) {}
+func (o *fakeObserver) WaitResolved(correlationID string, _ time.Duration) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.resolvedIDs = append(o.resolvedIDs, correlationID)
+}
 
-func (o *fakeObserver) WaitTimedOut(string) {}
+func (o *fakeObserver) WaitTimedOut(correlationID string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.timedOutIDs = append(o.timedOutIDs, correlationID)
+}
 
-func (o *fakeObserver) WaitDrained(string) {}
+func (o *fakeObserver) WaitDrained(correlationID string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.drainedIDs = append(o.drainedIDs, correlationID)
+}
 
 func (o *fakeObserver) ReplyLate(correlationID string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
 	o.lateIDs = append(o.lateIDs, correlationID)
 }
 
 func (o *fakeObserver) ReplyRejected(err error) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
 	o.rejected = append(o.rejected, err)
 }
 
-func (o *fakeObserver) Inflight(int) {}
+func (o *fakeObserver) Inflight(count int) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.inflight = append(o.inflight, count)
+}
+
+func (o *fakeObserver) snapshotStarted() []string {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return append([]string(nil), o.startedIDs...)
+}
+
+func (o *fakeObserver) snapshotResolved() []string {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return append([]string(nil), o.resolvedIDs...)
+}
+
+func (o *fakeObserver) snapshotTimedOut() []string {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return append([]string(nil), o.timedOutIDs...)
+}
+
+func (o *fakeObserver) snapshotDrained() []string {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return append([]string(nil), o.drainedIDs...)
+}
+
+func (o *fakeObserver) lastInflight() int {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if len(o.inflight) == 0 {
+		return -1
+	}
+	return o.inflight[len(o.inflight)-1]
+}
 
 type fakeConsumerCreator struct {
 	err error

@@ -176,6 +176,89 @@ func TestRegistryFailAll(t *testing.T) {
 	}
 }
 
+func TestRegistryReportsWaitStartedAndResolved(t *testing.T) {
+	r := newRegistry()
+	obs := &fakeObserver{}
+	r.attachObserver(obs)
+
+	w, err := r.register("corr-1")
+	if err != nil {
+		t.Fatalf("unexpected register error: %v", err)
+	}
+
+	if got := obs.snapshotStarted(); len(got) != 1 || got[0] != "corr-1" {
+		t.Fatalf("expected WaitStarted(corr-1), got %v", got)
+	}
+	if got := obs.lastInflight(); got != 1 {
+		t.Fatalf("expected inflight=1 after register, got %d", got)
+	}
+
+	r.resolve("corr-1", &fakeMsg{subject: "corr-1"})
+	if _, err := w.Wait(context.Background()); err != nil {
+		t.Fatalf("unexpected wait error: %v", err)
+	}
+
+	if got := obs.snapshotResolved(); len(got) != 1 || got[0] != "corr-1" {
+		t.Fatalf("expected WaitResolved(corr-1), got %v", got)
+	}
+	if got := obs.lastInflight(); got != 0 {
+		t.Fatalf("expected inflight=0 after resolve, got %d", got)
+	}
+}
+
+func TestRegistryReportsWaitTimedOut(t *testing.T) {
+	r := newRegistry()
+	obs := &fakeObserver{}
+	r.attachObserver(obs)
+
+	w, err := r.register("corr-1")
+	if err != nil {
+		t.Fatalf("unexpected register error: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+
+	if _, err := w.Wait(ctx); !errors.Is(err, ErrTimeout) {
+		t.Fatalf("expected ErrTimeout, got %v", err)
+	}
+
+	if got := obs.snapshotTimedOut(); len(got) != 1 || got[0] != "corr-1" {
+		t.Fatalf("expected WaitTimedOut(corr-1), got %v", got)
+	}
+}
+
+func TestRegistryReportsWaitDrained(t *testing.T) {
+	r := newRegistry()
+	obs := &fakeObserver{}
+	r.attachObserver(obs)
+
+	w1, err := r.register("corr-1")
+	if err != nil {
+		t.Fatalf("unexpected register error: %v", err)
+	}
+	w2, err := r.register("corr-2")
+	if err != nil {
+		t.Fatalf("unexpected register error: %v", err)
+	}
+
+	r.failAll(ErrDrained)
+
+	for _, w := range []*Waiter{w1, w2} {
+		if _, err := w.Wait(context.Background()); !errors.Is(err, ErrDrained) {
+			t.Fatalf("expected ErrDrained, got %v", err)
+		}
+	}
+
+	got := obs.snapshotDrained()
+	if len(got) != 2 {
+		t.Fatalf("expected 2 WaitDrained calls, got %v", got)
+	}
+	if got := obs.lastInflight(); got != 0 {
+		t.Fatalf("expected inflight=0 after failAll, got %d", got)
+	}
+}
+
 func TestRegistryConcurrentPairsLeaveNoEntries(t *testing.T) {
 	r := newRegistry()
 

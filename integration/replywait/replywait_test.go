@@ -175,8 +175,9 @@ func startFixedPortNATSContainer(t *testing.T) *fixedPortNATSContainer {
 	port := freeTCPPort(t)
 	out, err := exec.Command(
 		"docker", "run", "-d", "--rm",
+		"--name", "replywait-restart-"+strings.ToLower(uuid.NewString()),
 		"-p", "127.0.0.1:"+port+":4222",
-		"nats:2.10-alpine", "-DV", "-js",
+		"nats:2.10-alpine", "-DV", "-js", "-sd", "/data/js",
 	).CombinedOutput()
 	require.NoErrorf(t, err, "docker run nats failed: %s", out)
 
@@ -223,16 +224,29 @@ func consumerCount(t *testing.T, js jetstream.JetStream, streamName string) int 
 }
 
 type fakeObserver struct {
-	mu      sync.Mutex
-	late    []string
-	rejects []error
+	mu       sync.Mutex
+	late     []string
+	rejects  []error
+	resolved []string
+	timedOut []string
 }
 
-func (f *fakeObserver) WaitStarted(string)                {}
-func (f *fakeObserver) WaitResolved(string, time.Duration) {}
-func (f *fakeObserver) WaitTimedOut(string)                {}
-func (f *fakeObserver) WaitDrained(string)                 {}
-func (f *fakeObserver) Inflight(int)                       {}
+func (f *fakeObserver) WaitStarted(string) {}
+
+func (f *fakeObserver) WaitResolved(correlationID string, _ time.Duration) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.resolved = append(f.resolved, correlationID)
+}
+
+func (f *fakeObserver) WaitTimedOut(correlationID string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.timedOut = append(f.timedOut, correlationID)
+}
+
+func (f *fakeObserver) WaitDrained(string) {}
+func (f *fakeObserver) Inflight(int)       {}
 
 func (f *fakeObserver) ReplyLate(correlationID string) {
 	f.mu.Lock()
@@ -251,6 +265,22 @@ func (f *fakeObserver) lateSnapshot() []string {
 	defer f.mu.Unlock()
 	out := make([]string, len(f.late))
 	copy(out, f.late)
+	return out
+}
+
+func (f *fakeObserver) resolvedSnapshot() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]string, len(f.resolved))
+	copy(out, f.resolved)
+	return out
+}
+
+func (f *fakeObserver) timedOutSnapshot() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]string, len(f.timedOut))
+	copy(out, f.timedOut)
 	return out
 }
 
@@ -316,7 +346,8 @@ func TestTwoWaitersIsolatedByPodInstance(t *testing.T) {
 	cfgA := testConfig(stream, "pod-a", 5*time.Second, 10*time.Second, time.Second)
 	cfgB := testConfig(stream, "pod-b", 5*time.Second, 10*time.Second, time.Second)
 
-	rwA, appA := startModule(t, js, cfgA, nil)
+	observerA := &fakeObserver{}
+	rwA, appA := startModule(t, js, cfgA, observerA)
 	rwB, appB := startModule(t, js, cfgB, nil)
 	t.Cleanup(func() { stopModule(t, appA) })
 	t.Cleanup(func() { stopModule(t, appB) })
@@ -349,6 +380,8 @@ func TestTwoWaitersIsolatedByPodInstance(t *testing.T) {
 	require.Equal(t, rwB.ReplySubject(), msgB.Subject())
 	require.Equal(t, "corr-a", string(msgA.Data()))
 	require.Equal(t, "corr-b", string(msgB.Data()))
+
+	require.Contains(t, observerA.resolvedSnapshot(), "corr-a", "expected observer.WaitResolved for corr-a")
 }
 
 func TestFiveHundredConcurrentRequestsNoLossNoCrossTalk(t *testing.T) {
@@ -429,9 +462,11 @@ func TestLateReplyAfterTimeoutIsReportedAsReplyLate(t *testing.T) {
 		}
 		return false
 	}, 3*time.Second, 20*time.Millisecond, "expected observer.ReplyLate for %s", id)
+
+	require.Contains(t, observer.timedOutSnapshot(), id, "expected observer.WaitTimedOut for %s", id)
 }
 
-func TestNATSRestartMidWaitSurfacesTimeoutWithoutHanging(t *testing.T) {
+func TestNATSRestartMidWaitRecoversAndDeliversReply(t *testing.T) {
 	t.Parallel()
 
 	container := startFixedPortNATSContainer(t)
@@ -440,15 +475,15 @@ func TestNATSRestartMidWaitSurfacesTimeoutWithoutHanging(t *testing.T) {
 	stream := uniqueStreamName(t)
 	ensureStream(t, js, stream, time.Minute)
 
-	cfg := testConfig(stream, "pod-restart", 3*time.Second, 10*time.Second, time.Second)
+	cfg := testConfig(stream, "pod-restart", 5*time.Second, 10*time.Second, time.Second)
 	rw, app := startModule(t, js, cfg, nil)
 	t.Cleanup(func() { stopModule(t, app) })
 
-	id := "restart-" + uuid.NewString()
+	inFlightID := "restart-inflight-" + uuid.NewString()
 
 	waitDone := make(chan error, 1)
 	go func() {
-		_, err := rw.Request(context.Background(), id, func(context.Context) error { return nil })
+		_, err := rw.Request(context.Background(), inFlightID, func(context.Context) error { return nil })
 		waitDone <- err
 	}()
 
@@ -458,10 +493,30 @@ func TestNATSRestartMidWaitSurfacesTimeoutWithoutHanging(t *testing.T) {
 
 	select {
 	case err := <-waitDone:
-		require.ErrorIs(t, err, replywait.ErrTimeout)
-	case <-time.After(10 * time.Second):
+		require.ErrorIs(t, err, replywait.ErrTimeout,
+			"in-flight wait must surface a timeout, not hang, while NATS is restarting")
+	case <-time.After(15 * time.Second):
 		t.Fatal("in-flight wait neither resolved nor surfaced a timeout after NATS restart")
 	}
+
+	require.Eventually(t, func() bool {
+		reconnectedStream, err := js.Stream(context.Background(), stream)
+		if err != nil {
+			return false
+		}
+		_, err = reconnectedStream.Info(context.Background())
+		return err == nil
+	}, 30*time.Second, 500*time.Millisecond, "expected the reply stream to survive the NATS restart and stay reachable")
+
+	recoveredID := "restart-recovered-" + uuid.NewString()
+
+	msg, err := rw.Request(context.Background(), recoveredID, func(ctx context.Context) error {
+		return fakeExecutorReply(ctx, js, rw.ReplySubject(), recoveredID)
+	})
+	require.NoError(t, err,
+		"expected the pod listener to self-heal its ordered consumer and deliver a reply after the NATS restart, not stay dead")
+	require.Equal(t, rw.ReplySubject(), msg.Subject())
+	require.Equal(t, recoveredID, string(msg.Data()))
 }
 
 func TestEphemeralConsumerRemovedAfterInactiveThresholdOnCrash(t *testing.T) {

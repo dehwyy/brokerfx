@@ -65,9 +65,22 @@ func (s *OutboxStore) Save(ctx context.Context, event producer.Event) error {
 }
 
 func (s *OutboxStore) SaveMessage(ctx context.Context, msg Message, opts ...MessageOption) error {
+	if msg.err != nil {
+		return msg.err
+	}
+
 	options, err := newMessageOptions(opts)
 	if err != nil {
 		return err
+	}
+
+	if len(msg.headers) > 0 {
+		if options.headers == nil {
+			options.headers = make(map[string]string, len(msg.headers))
+		}
+		for k, v := range msg.headers {
+			options.headers[k] = v
+		}
 	}
 
 	payload := msg.Payload

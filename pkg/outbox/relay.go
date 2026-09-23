@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/textproto"
+	"strings"
 	"sync"
 	"time"
 
@@ -251,6 +252,13 @@ func (r *OutboxRelay) processBatch(ctx context.Context) {
 
 	r.logger.Debug().Int("count", len(events)).Msg("processing outbox batch")
 
+	kvLatestIndex := make(map[string]int)
+	for i, ev := range events {
+		if strings.HasPrefix(ev.Topic, kvSubjectPrefix) {
+			kvLatestIndex[ev.Topic] = i
+		}
+	}
+
 	type pubResult struct {
 		id  string
 		err error
@@ -258,8 +266,14 @@ func (r *OutboxRelay) processBatch(ctx context.Context) {
 
 	results := make(chan pubResult, len(events))
 
-	for _, ev := range events {
+	for i, ev := range events {
 		event := ev
+		index := i
+
+		if latest, ok := kvLatestIndex[event.Topic]; ok && latest != index {
+			results <- pubResult{id: event.ID}
+			continue
+		}
 
 		go func() {
 			headers := make(map[string]string, len(event.Headers)+1)

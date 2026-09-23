@@ -460,6 +460,49 @@ func (s *Service) CreateOrder(ctx context.Context, req *CreateOrderRequest) erro
 
 **Stall recovery:** Events stuck in `IN_FLIGHT` past `StallThreshold` (default 5 minutes) are re-picked and re-published on the next relay cycle (handles a crash between NATS ack and the DB state update). The re-publish carries `Nats-Msg-Id = row.ID`, so the stream `Duplicates` window suppresses the duplicate — which is why `Duplicates` must be `>= 2 × StallThreshold` (see Stream defaults).
 
+#### Outbox v2 (opt-in)
+
+Everything below is additive on top of the v0.1.9 schema and API. A service that does nothing keeps v0.1.9 behavior exactly: same columns, same `Save`, same `DefaultConfig()`. v2 features turn on individually.
+
+**Opt-in.** Use `outbox.RecommendedConfig()` instead of `outbox.DefaultConfig()` as the `Config` passed into `RelayDeps`. It sets `CleanupInterval`, `DeleteOlderThan`, `RetainParked`, `MaxAttempts`, `RetryBackoffBase/Max`, `StatsInterval` to values fit for production. `DefaultConfig()` itself is unchanged (ОК-0) and still zero-values those fields, which disables the corresponding v2 behavior.
+
+**Schema migration.** `outbox.AutoMigrate(db)` now also adds the v2 columns to `outbox_events` (`attempts`, `last_error`, `next_attempt_at`, `headers`) via `ADD COLUMN IF NOT EXISTS`, plus an index:
+
+```sql
+alter table outbox_events add column if not exists attempts integer not null default 0;
+alter table outbox_events add column if not exists last_error text null;
+alter table outbox_events add column if not exists next_attempt_at timestamptz null;
+alter table outbox_events add column if not exists headers jsonb null;
+create index if not exists idx_outbox_events_state_updated_at on outbox_events (state, updated_at);
+```
+
+A service that runs its own SQL migrations instead of `AutoMigrate` (no `outbox_retries` table, for example) applies the same five statements by hand. The relay detects the schema at startup (`information_schema.columns` for the four v2 columns, `to_regclass` for `outbox_retries`) and runs in legacy v0.1.9 mode when they are absent — no crash, no `ErrSchemaOutdated` surfaced to the caller, just no v2 behavior (attempts/backoff/parking/headers/signing) until the columns exist.
+
+**Relay pause (D-17).** Set env `BROKERFX_OUTBOX_RELAY_PAUSED=true` (or `1`) before the pod starts, or `Config.Paused = true`, to keep the relay from publishing while it keeps accepting `SaveMessage`/`Save` writes — rows pile up as `PENDING` instead of draining. Useful for draining a topology change without losing events. Same effect at runtime via `(*OutboxRelay).Pause()` / `.Resume()`; `.Paused()` reports the current state. Env is checked once at relay construction and OR'd with `Config.Paused`.
+
+**`SaveMessage` / `KVPut` / `KVDelete`.** `SaveMessage` replaces `Save` when a message needs headers or a JetStream KV projection, in the same business transaction:
+
+```go
+err := s.outboxStore.SaveMessage(ctx, outbox.KVPut("merchant-config", merchantID, payload),
+    outbox.WithHeaders(map[string]string{"X-Trace-Id": traceID}))
+
+err := s.outboxStore.SaveMessage(ctx, outbox.KVDelete("merchant-config", merchantID))
+```
+
+`KVPut`/`KVDelete` build a `Message{Subject: "$KV.<bucket>.<key>", ...}`; the relay publishes to that subject like any other outbox row, and JetStream's KV projection turns the publish into a KV write. `KVDelete` sets the reserved `KV-Operation: DEL` header, which the relay also honors on `Nats-Msg-Id` dedup the same way as a put. `WithHeaders` merges caller headers onto the message; setting `Nats-Msg-Id` explicitly through it returns `ErrReservedHeader` (the relay always sets it itself, from the row id). Bucket must match `^[A-Za-z0-9_-]+$`, key must match `^[-/_=.A-Za-z0-9]+$` and not start or end with `.`; violations return `ErrInvalidKVBucket` / `ErrInvalidKVKey` before any DB write.
+
+**`kv.Ensure`.** `pkg/nats/jetstream/kv.Ensure(ctx, js, kv.Opts{Bucket, Replicas, History, Storage, MaxBytes, Duplicates})` idempotently creates or reconciles the KV bucket's backing stream (`KV_<bucket>`). `Duplicates` defaults to `kv.DefaultDuplicates` (15m) when zero, matching the outbox relay's own dedup window — a KV bucket written through the outbox should use the same or a longer window. Repeated calls with the same `Opts` only issue an `UpdateStream` when the live stream config actually differs; `Replicas` and `MaxBytes` come from the caller's config, never hardcoded (stage: 1, prod: 3 after ОК-1).
+
+**Signer.** Pass a `Signer` (`Sign(subject string, headers map[string]string, payload []byte) error`) as the optional `Signer` field on `RelayDeps` to have the relay sign every published message before publish, headers included. `pkg/nats/signature.NewEd25519Signer(apiKeyID, privateKey)` is the Ed25519 implementation already used by `pkg/nats/core`'s middleware (same `Sign`/`Verify`, same headers `X-API-Key-ID`/`X-Timestamp`/`X-Signature`). Signing is skipped for `$KV.*` subjects, since a KV publish carries no request to authenticate on the receiving side.
+
+**Observer.** Pass an `Observer` as the optional `Observer` field on `RelayDeps` to get relay lifecycle hooks: `OnPublished(n)`, `OnFailed(n)`, `OnParked(eventID, subject, lastError)`, `OnStats(stats Stats)` (`Stats` — `Pending`, `InFlight`, `Done`, `Parked`, `OldestPendingAge`). `OnStats` fires every `Config.StatsInterval` when set. All four are best-effort hooks for metrics/alerting; a nil `Observer` (the default) skips them entirely.
+
+**Attempts, backoff, PARKED.** With `Config.MaxAttempts > 0`, a failed publish increments `attempts` and schedules `next_attempt_at` using exponential backoff between `RetryBackoffBase` and `RetryBackoffMax`. Once `attempts >= MaxAttempts`, the row moves to `StateParked` instead of being retried again, and `Observer.OnParked` fires if set. `Config.RetainParked` controls how long parked rows survive before cleanup deletes them (`0` keeps them forever).
+
+**`RequeueParked` / `Stats`.** `(*OutboxStore).RequeueParked(ctx, ids []string) (int64, error)` moves the given parked rows back to `PENDING` with `attempts` reset, for manual recovery. `(*OutboxStore).Stats(ctx) (Stats, error)` returns the same counts as the `OnStats` hook, for on-demand polling (health checks, admin endpoints).
+
+**ОК-0.** `stream-opts-builder.NewDefault` (MaxAge 12h, Replicas 1, Duplicates 15m, WorkQueue) and `outbox.DefaultConfig()` are unchanged by v2 and must stay that way — v2 config lives entirely in the new, separately-opted-in fields and in `RecommendedConfig()`.
+
 ---
 
 ### pkg/timedactor

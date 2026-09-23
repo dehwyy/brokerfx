@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"reflect"
+	"sync"
 
 	cryptov1 "github.com/dehwyy/brokerfx/pkg/crypto/v1"
 	"github.com/dehwyy/brokerfx/pkg/nats/jetstream/producer"
@@ -20,6 +21,10 @@ type OutboxStore struct {
 	db         *gorm.DB
 	wakeupChan chan struct{}
 	txmanager  txmanager.TxManager
+
+	schemaCapsMu       sync.Mutex
+	schemaCaps         schemaCaps
+	schemaCapsResolved bool
 }
 
 // NewStore creates a new OutboxStore.
@@ -70,6 +75,24 @@ func (s *OutboxStore) SaveMessage(ctx context.Context, msg Message, opts ...Mess
 		payload = []byte{}
 	}
 
+	caps, err := s.ensureSchemaCaps(ctx)
+	if err != nil {
+		return err
+	}
+
+	if len(options.headers) > 0 && !caps.V2 {
+		return ErrSchemaOutdated
+	}
+
+	if !caps.V2 {
+		return s.txmanager.GetConnection(ctx).Create(&OutboxEvent{
+			ID:      uuid.NewString(),
+			Topic:   msg.Subject,
+			Payload: payload,
+			State:   StatePending,
+		}).Error
+	}
+
 	row := outboxEventRow{
 		ID:      uuid.NewString(),
 		Topic:   msg.Subject,
@@ -78,14 +101,6 @@ func (s *OutboxStore) SaveMessage(ctx context.Context, msg Message, opts ...Mess
 	}
 
 	if len(options.headers) > 0 {
-		caps, err := detectSchema(ctx, s.db)
-		if err != nil {
-			return err
-		}
-		if !caps.V2 {
-			return ErrSchemaOutdated
-		}
-
 		headersJSON, err := json.Marshal(options.headers)
 		if err != nil {
 			return err
@@ -94,6 +109,25 @@ func (s *OutboxStore) SaveMessage(ctx context.Context, msg Message, opts ...Mess
 	}
 
 	return s.txmanager.GetConnection(ctx).Create(&row).Error
+}
+
+func (s *OutboxStore) ensureSchemaCaps(ctx context.Context) (schemaCaps, error) {
+	s.schemaCapsMu.Lock()
+	defer s.schemaCapsMu.Unlock()
+
+	if s.schemaCapsResolved {
+		return s.schemaCaps, nil
+	}
+
+	caps, err := detectSchema(ctx, s.db)
+	if err != nil {
+		return schemaCaps{}, err
+	}
+
+	s.schemaCaps = caps
+	s.schemaCapsResolved = true
+
+	return s.schemaCaps, nil
 }
 
 // WakeupRelay sends a non-blocking signal to the relay worker, triggering

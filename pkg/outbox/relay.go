@@ -3,6 +3,7 @@ package outbox
 import (
 	"context"
 	"encoding/json"
+	"net/textproto"
 	"sync"
 	"time"
 
@@ -200,10 +201,7 @@ func (r *OutboxRelay) processBatch(ctx context.Context) {
 
 	var events []relayEvent
 
-	// Open a transaction to lock and update the rows to IN_FLIGHT
 	err := db.Transaction(func(tx *gorm.DB) error {
-		// Find events that are PENDING, or IN_FLIGHT but stalled past the configured
-		// threshold. See Config.StallThreshold for the dedup-window invariant.
 		stalledThreshold := time.Now().Add(-r.config.StallThreshold)
 
 		locked := tx.
@@ -264,6 +262,9 @@ func (r *OutboxRelay) processBatch(ctx context.Context) {
 		go func() {
 			headers := make(map[string]string, len(event.Headers)+1)
 			for k, v := range event.Headers {
+				if textproto.CanonicalMIMEHeaderKey(k) == jetstream.MsgIDHeader {
+					continue
+				}
 				headers[k] = v
 			}
 			headers[jetstream.MsgIDHeader] = event.ID

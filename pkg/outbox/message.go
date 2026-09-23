@@ -2,6 +2,7 @@ package outbox
 
 import (
 	"errors"
+	"net/textproto"
 
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -36,8 +37,11 @@ func newMessageOptions(opts []MessageOption) (messageOptions, error) {
 		opt(&options)
 	}
 
-	if _, ok := options.headers[jetstream.MsgIDHeader]; ok {
-		return messageOptions{}, ErrReservedHeader
+	reserved := textproto.CanonicalMIMEHeaderKey(jetstream.MsgIDHeader)
+	for k := range options.headers {
+		if textproto.CanonicalMIMEHeaderKey(k) == reserved {
+			return messageOptions{}, ErrReservedHeader
+		}
 	}
 
 	return options, nil

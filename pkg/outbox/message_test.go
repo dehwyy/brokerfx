@@ -47,3 +47,13 @@ func TestNewMessageOptionsRejectsReservedHeaderBeforeTouchingStore(t *testing.T)
 		t.Fatalf("expected ErrReservedHeader, got %v", err)
 	}
 }
+
+func TestNewMessageOptionsRejectsReservedHeaderCaseInsensitive(t *testing.T) {
+	_, err := newMessageOptions([]MessageOption{
+		WithHeaders(map[string]string{"nats-msg-id": "x"}),
+	})
+
+	if !errors.Is(err, ErrReservedHeader) {
+		t.Fatalf("expected ErrReservedHeader, got %v", err)
+	}
+}

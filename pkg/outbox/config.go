@@ -42,6 +42,9 @@ type Config struct {
 	RetryBackoffBase time.Duration
 	RetryBackoffMax  time.Duration
 	StatsInterval    time.Duration
+
+	CleanupInterval time.Duration
+	RetainParked    time.Duration
 }
 
 func DefaultConfig() Config {
@@ -52,6 +55,20 @@ func DefaultConfig() Config {
 		DeleteOlderThan: 1 * time.Hour, // relevant only for UpdateAfterSend mode
 		StallThreshold:  5 * time.Minute,
 	}
+}
+
+func RecommendedConfig() Config {
+	cfg := DefaultConfig()
+
+	cfg.CleanupInterval = 24 * time.Hour
+	cfg.DeleteOlderThan = 7 * 24 * time.Hour
+	cfg.RetainParked = 30 * 24 * time.Hour
+	cfg.MaxAttempts = 20
+	cfg.RetryBackoffBase = 2 * time.Second
+	cfg.RetryBackoffMax = 5 * time.Minute
+	cfg.StatsInterval = time.Minute
+
+	return cfg
 }
 
 // StoreDeps defines the dependencies needed to construct the OutboxStore.

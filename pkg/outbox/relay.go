@@ -117,14 +117,13 @@ func (r *OutboxRelay) Run(ctx context.Context) {
 	ticker := time.NewTicker(r.config.TickInterval)
 	defer ticker.Stop()
 
-	// Ticker for cleanup if mode is UpdateAfterSend
-	var cleanupTicker *time.Ticker
-	var cleanupChan <-chan time.Time
-	if r.config.Mode == ModeUpdateAfterSend {
-		cleanupTicker = time.NewTicker(5 * time.Minute)
-		cleanupChan = cleanupTicker.C
-		defer cleanupTicker.Stop()
+	cleanupInterval := r.config.CleanupInterval
+	if cleanupInterval <= 0 {
+		cleanupInterval = 5 * time.Minute
 	}
+	cleanupTicker := time.NewTicker(cleanupInterval)
+	defer cleanupTicker.Stop()
+	cleanupChan := cleanupTicker.C
 
 	var statsTicker *time.Ticker
 	var statsChan <-chan time.Time
@@ -302,12 +301,25 @@ func (r *OutboxRelay) revertFailedV2(db *gorm.DB, events []relayEvent, failedOut
 
 func (r *OutboxRelay) cleanupDone() {
 	db := r.store.DB()
-	threshold := time.Now().Add(-r.config.DeleteOlderThan)
-	res := db.Where("state = ? AND updated_at < ?", StateDone, threshold).Delete(&OutboxEvent{})
-	if res.Error != nil {
-		r.logger.Error().Err(res.Error).Msg("failed to clean up DONE outbox events")
-	} else if res.RowsAffected > 0 {
-		r.logger.Debug().Int64("deleted_count", res.RowsAffected).Msg("cleaned up DONE outbox events")
+
+	doneThreshold := time.Now().Add(-r.config.DeleteOlderThan)
+	doneRes := db.Where("state = ? AND updated_at < ?", StateDone, doneThreshold).Delete(&OutboxEvent{})
+	if doneRes.Error != nil {
+		r.logger.Error().Err(doneRes.Error).Msg("failed to clean up DONE outbox events")
+	} else if doneRes.RowsAffected > 0 {
+		r.logger.Debug().Int64("deleted_count", doneRes.RowsAffected).Msg("cleaned up DONE outbox events")
+	}
+
+	if r.config.RetainParked <= 0 {
+		return
+	}
+
+	parkedThreshold := time.Now().Add(-r.config.RetainParked)
+	parkedRes := db.Where("state = ? AND updated_at < ?", StateParked, parkedThreshold).Delete(&OutboxEvent{})
+	if parkedRes.Error != nil {
+		r.logger.Error().Err(parkedRes.Error).Msg("failed to clean up PARKED outbox events")
+	} else if parkedRes.RowsAffected > 0 {
+		r.logger.Debug().Int64("deleted_count", parkedRes.RowsAffected).Msg("cleaned up PARKED outbox events")
 	}
 }
 

@@ -8,6 +8,7 @@ const (
 	StatePending  OutboxState = "PENDING"
 	StateInFlight OutboxState = "IN_FLIGHT"
 	StateDone     OutboxState = "DONE"
+	StateParked   OutboxState = "PARKED"
 )
 
 // OutboxEvent is a GORM model representing an event queued for delivery to NATS JetStream.
@@ -26,4 +27,21 @@ type OutboxRetry struct {
 	EventID   string    `gorm:"type:uuid;not null;index"`
 	Error     string    `gorm:"type:text;not null"`
 	CreatedAt time.Time `gorm:"index;autoCreateTime"`
+}
+
+type outboxEventRow struct {
+	ID            string
+	Topic         string
+	Payload       []byte
+	State         OutboxState
+	Attempts      int
+	LastError     *string
+	NextAttemptAt *time.Time
+	Headers       []byte
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
+}
+
+func (outboxEventRow) TableName() string {
+	return "outbox_events"
 }

@@ -2,6 +2,7 @@ package outbox
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"github.com/nats-io/nats.go/jetstream"
@@ -19,6 +20,9 @@ type OutboxRelay struct {
 	producer Producer
 	logger   zerolog.Logger
 	config   Config
+
+	schemaCapsOnce sync.Once
+	schemaCaps     schemaCaps
 
 	cancel context.CancelFunc
 	done   chan struct{}
@@ -52,6 +56,8 @@ func NewRelay(deps RelayDeps) *OutboxRelay {
 // before returning, ensuring graceful shutdown.
 func (r *OutboxRelay) Run(ctx context.Context) {
 	defer close(r.done)
+
+	r.ensureSchemaCaps(ctx)
 
 	ticker := time.NewTicker(r.config.TickInterval)
 	defer ticker.Stop()
@@ -91,6 +97,24 @@ func (r *OutboxRelay) Run(ctx context.Context) {
 // Done returns a channel that is closed when the relay has fully stopped.
 func (r *OutboxRelay) Done() <-chan struct{} {
 	return r.done
+}
+
+func (r *OutboxRelay) ensureSchemaCaps(ctx context.Context) schemaCaps {
+	r.schemaCapsOnce.Do(func() {
+		caps, err := detectSchema(ctx, r.store.DB())
+		if err != nil {
+			r.logger.Error().Err(err).Msg("failed to detect outbox schema")
+			return
+		}
+
+		r.schemaCaps = caps
+
+		if !caps.Retries {
+			r.logger.Warn().Msg("outbox_retries missing")
+		}
+	})
+
+	return r.schemaCaps
 }
 
 func (r *OutboxRelay) cleanupDone() {
@@ -221,8 +245,10 @@ func (r *OutboxRelay) processBatch(ctx context.Context) {
 			r.logger.Error().Err(err).Int("count", len(failedIDs)).Msg("failed to revert failed events to PENDING")
 		}
 
-		if err := db.Create(&retries).Error; err != nil {
-			r.logger.Error().Err(err).Int("count", len(retries)).Msg("failed to save to retries table")
+		if r.schemaCaps.Retries {
+			if err := db.Create(&retries).Error; err != nil {
+				r.logger.Error().Err(err).Int("count", len(retries)).Msg("failed to save to retries table")
+			}
 		}
 	}
 
@@ -248,10 +274,4 @@ func (r *OutboxRelay) processBatch(ctx context.Context) {
 		Int("published", len(successIDs)).
 		Int("failed", len(failedOutcomes)).
 		Msg("outbox batch processed")
-}
-
-// AutoMigrate creates or updates the outbox_events table schema.
-// Should be called during application startup.
-func AutoMigrate(db *gorm.DB) error {
-	return db.AutoMigrate(&OutboxEvent{}, &OutboxRetry{})
 }

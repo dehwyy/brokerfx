@@ -15,6 +15,14 @@ type fakeObserver struct {
 	rejected []error
 }
 
+func (o *fakeObserver) WaitStarted(string) {}
+
+func (o *fakeObserver) WaitResolved(string, time.Duration) {}
+
+func (o *fakeObserver) WaitTimedOut(string) {}
+
+func (o *fakeObserver) WaitDrained(string) {}
+
 func (o *fakeObserver) ReplyLate(correlationID string) {
 	o.lateIDs = append(o.lateIDs, correlationID)
 }
@@ -22,6 +30,8 @@ func (o *fakeObserver) ReplyLate(correlationID string) {
 func (o *fakeObserver) ReplyRejected(err error) {
 	o.rejected = append(o.rejected, err)
 }
+
+func (o *fakeObserver) Inflight(int) {}
 
 type fakeConsumerCreator struct {
 	err error

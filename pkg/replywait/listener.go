@@ -8,17 +8,6 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-type Observer interface {
-	ReplyLate(correlationID string)
-	ReplyRejected(err error)
-}
-
-type NopObserver struct{}
-
-func (NopObserver) ReplyLate(string) {}
-
-func (NopObserver) ReplyRejected(error) {}
-
 type orderedConsumerCreator interface {
 	OrderedConsumer(ctx context.Context, stream string, cfg jetstream.OrderedConsumerConfig) (jetstream.Consumer, error)
 }

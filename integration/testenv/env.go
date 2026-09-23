@@ -83,7 +83,15 @@ type RelayHarness struct {
 	done   <-chan struct{}
 }
 
-func NewRelayHarness(t *testing.T, db *gorm.DB, producer outbox.Producer, cfg outbox.Config) *RelayHarness {
+type RelayHarnessOption func(*outbox.RelayDeps)
+
+func WithSigner(signer outbox.Signer) RelayHarnessOption {
+	return func(deps *outbox.RelayDeps) {
+		deps.Signer = signer
+	}
+}
+
+func NewRelayHarness(t *testing.T, db *gorm.DB, producer outbox.Producer, cfg outbox.Config, opts ...RelayHarnessOption) *RelayHarness {
 	t.Helper()
 
 	txm, err := gormtx.New(gormtx.Opts{DB: db})
@@ -94,11 +102,16 @@ func NewRelayHarness(t *testing.T, db *gorm.DB, producer outbox.Producer, cfg ou
 		TxManager: txm,
 	})
 
-	relay := outbox.NewRelay(outbox.RelayDeps{
+	deps := outbox.RelayDeps{
 		Store:    store,
 		Producer: producer,
 		Config:   cfg,
-	})
+	}
+	for _, opt := range opts {
+		opt(&deps)
+	}
+
+	relay := outbox.NewRelay(deps)
 
 	return &RelayHarness{
 		Store: store,

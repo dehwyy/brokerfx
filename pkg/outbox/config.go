@@ -37,6 +37,10 @@ type Config struct {
 	// would process the event twice. With 2x headroom the re-publish always lands well
 	// inside a live dedup window. Defaults: StallThreshold 5m, Duplicates 15m.
 	StallThreshold time.Duration
+
+	MaxAttempts      int
+	RetryBackoffBase time.Duration
+	RetryBackoffMax  time.Duration
 }
 
 func DefaultConfig() Config {

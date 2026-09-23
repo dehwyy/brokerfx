@@ -3,11 +3,13 @@ package outbox
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/textproto"
 	"strings"
 	"sync"
 	"time"
 
+	natsgo "github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
@@ -16,10 +18,46 @@ import (
 )
 
 type relayEvent struct {
-	ID      string
-	Topic   string
-	Payload []byte
-	Headers map[string]string
+	ID       string
+	Topic    string
+	Payload  []byte
+	Headers  map[string]string
+	Attempts int
+}
+
+type pubResult struct {
+	id  string
+	err error
+}
+
+func nextAttemptDelay(attempt int, base, max time.Duration) time.Duration {
+	if base <= 0 {
+		return 0
+	}
+	if attempt < 1 {
+		attempt = 1
+	}
+
+	delay := base
+	for i := 1; i < attempt; i++ {
+		if max > 0 && delay >= max {
+			return max
+		}
+		delay *= 2
+	}
+
+	if max > 0 && delay > max {
+		return max
+	}
+
+	return delay
+}
+
+func isTransportError(err error) bool {
+	return errors.Is(err, natsgo.ErrNoServers) ||
+		errors.Is(err, natsgo.ErrConnectionClosed) ||
+		errors.Is(err, natsgo.ErrDisconnected) ||
+		errors.Is(err, natsgo.ErrConnectionReconnecting)
 }
 
 // OutboxRelay is a background worker that reads uncommitted outbox events from PostgreSQL
@@ -165,9 +203,10 @@ func (r *OutboxRelay) lockRowsV2(query *gorm.DB) ([]relayEvent, error) {
 	events := make([]relayEvent, len(rows))
 	for i, row := range rows {
 		event := relayEvent{
-			ID:      row.ID,
-			Topic:   row.Topic,
-			Payload: row.Payload,
+			ID:       row.ID,
+			Topic:    row.Topic,
+			Payload:  row.Payload,
+			Attempts: row.Attempts,
 		}
 
 		if len(row.Headers) > 0 {
@@ -183,6 +222,39 @@ func (r *OutboxRelay) lockRowsV2(query *gorm.DB) ([]relayEvent, error) {
 	}
 
 	return events, nil
+}
+
+func (r *OutboxRelay) revertFailedV2(db *gorm.DB, events []relayEvent, failedOutcomes []pubResult) {
+	eventByID := make(map[string]relayEvent, len(events))
+	for _, ev := range events {
+		eventByID[ev.ID] = ev
+	}
+
+	for _, outcome := range failedOutcomes {
+		attempts := eventByID[outcome.id].Attempts
+
+		var nextAttemptAt *time.Time
+		if !isTransportError(outcome.err) {
+			attempts++
+			at := time.Now().Add(nextAttemptDelay(attempts, r.config.RetryBackoffBase, r.config.RetryBackoffMax))
+			nextAttemptAt = &at
+		}
+
+		errMsg := outcome.err.Error()
+		update := outboxEventRow{
+			State:         StatePending,
+			Attempts:      attempts,
+			LastError:     &errMsg,
+			NextAttemptAt: nextAttemptAt,
+		}
+
+		if err := db.Model(&outboxEventRow{}).
+			Where("id = ?", outcome.id).
+			Select("state", "attempts", "last_error", "next_attempt_at").
+			Updates(update).Error; err != nil {
+			r.logger.Error().Err(err).Str("event_id", outcome.id).Msg("failed to record retry attempt")
+		}
+	}
 }
 
 func (r *OutboxRelay) cleanupDone() {
@@ -207,15 +279,26 @@ func (r *OutboxRelay) processBatch(ctx context.Context) {
 	err := db.Transaction(func(tx *gorm.DB) error {
 		stalledThreshold := time.Now().Add(-r.config.StallThreshold)
 
-		locked := tx.
+		lockedBase := tx.
 			Clauses(clause.Locking{
 				Strength: "UPDATE",
 				Options:  "SKIP LOCKED",
 			}).
-			Where("state = ?", StatePending).
-			Or("state = ? AND updated_at < ?", StateInFlight, stalledThreshold).
 			Order("created_at ASC").
 			Limit(r.config.BatchSize)
+
+		var locked *gorm.DB
+		if caps.V2 {
+			locked = lockedBase.Where(
+				"(state = ? AND (next_attempt_at IS NULL OR next_attempt_at <= ?)) OR (state = ? AND updated_at < ?)",
+				StatePending, time.Now(),
+				StateInFlight, stalledThreshold,
+			)
+		} else {
+			locked = lockedBase.
+				Where("state = ?", StatePending).
+				Or("state = ? AND updated_at < ?", StateInFlight, stalledThreshold)
+		}
 
 		var err error
 		if caps.V2 {
@@ -257,11 +340,6 @@ func (r *OutboxRelay) processBatch(ctx context.Context) {
 		if strings.HasPrefix(ev.Topic, kvSubjectPrefix) {
 			kvLatestIndex[ev.Topic] = i
 		}
-	}
-
-	type pubResult struct {
-		id  string
-		err error
 	}
 
 	results := make(chan pubResult, len(events))
@@ -337,7 +415,10 @@ func (r *OutboxRelay) processBatch(ctx context.Context) {
 		log.Debug().
 			Int("count", len(failedIDs)).
 			Msg("reverting failed events to PENDING")
-		if err := db.Model(&OutboxEvent{}).Where("id IN ?", failedIDs).Update("state", StatePending).Error; err != nil {
+
+		if caps.V2 {
+			r.revertFailedV2(db, events, failedOutcomes)
+		} else if err := db.Model(&OutboxEvent{}).Where("id IN ?", failedIDs).Update("state", StatePending).Error; err != nil {
 			r.logger.Error().Err(err).Int("count", len(failedIDs)).Msg("failed to revert failed events to PENDING")
 		}
 

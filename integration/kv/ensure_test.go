@@ -75,6 +75,55 @@ func TestEnsureIsIdempotentOnRepeatedCallWithSameOpts(t *testing.T) {
 	require.True(t, secondAck.Duplicate)
 }
 
+type countingJetStream struct {
+	jetstream.JetStream
+	updateStreamCalls           int
+	createOrUpdateKeyValueCalls int
+}
+
+func (c *countingJetStream) UpdateStream(ctx context.Context, cfg jetstream.StreamConfig) (jetstream.Stream, error) {
+	c.updateStreamCalls++
+	return c.JetStream.UpdateStream(ctx, cfg)
+}
+
+func (c *countingJetStream) CreateOrUpdateKeyValue(ctx context.Context, cfg jetstream.KeyValueConfig) (jetstream.KeyValue, error) {
+	c.createOrUpdateKeyValueCalls++
+	return c.JetStream.CreateOrUpdateKeyValue(ctx, cfg)
+}
+
+func TestEnsureMakesNoStreamChangesOnRepeatedCallWithSameOpts(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	js := testenv.NATS(t)
+
+	opts := kv.Opts{
+		Bucket:   "ENSURE6",
+		Replicas: 1,
+		History:  1,
+	}
+
+	_, err := kv.Ensure(
+		ctx,
+		js,
+		opts,
+	)
+	require.NoError(t, err)
+
+	counting := &countingJetStream{
+		JetStream: js,
+	}
+
+	_, err = kv.Ensure(
+		ctx,
+		counting,
+		opts,
+	)
+	require.NoError(t, err)
+	require.Zero(t, counting.updateStreamCalls)
+	require.Zero(t, counting.createOrUpdateKeyValueCalls)
+}
+
 func TestEnsureRejectsZeroReplicas(t *testing.T) {
 	t.Parallel()
 

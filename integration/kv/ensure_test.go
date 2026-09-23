@@ -37,6 +37,7 @@ func TestEnsureCreatesBucketWithConfiguredDuplicatesWindow(t *testing.T) {
 func TestEnsureIsIdempotentOnRepeatedCallWithSameOpts(t *testing.T) {
 	t.Parallel()
 
+	ctx := context.Background()
 	js := testenv.NATS(t)
 
 	opts := kv.Opts{
@@ -45,19 +46,33 @@ func TestEnsureIsIdempotentOnRepeatedCallWithSameOpts(t *testing.T) {
 		History:  1,
 	}
 
-	_, err := kv.Ensure(context.Background(), js, opts)
+	_, err := kv.Ensure(ctx, js, opts)
 	require.NoError(t, err)
 
-	_, err = kv.Ensure(context.Background(), js, opts)
+	stream, err := js.Stream(ctx, "KV_ENSURE2")
 	require.NoError(t, err)
 
-	stream, err := js.Stream(context.Background(), "KV_ENSURE2")
+	infoBeforeSecondEnsure, err := stream.Info(ctx)
 	require.NoError(t, err)
 
-	info, err := stream.Info(context.Background())
+	subject := "$KV.ENSURE2.dedup-probe"
+
+	firstAck, err := js.Publish(ctx, subject, []byte("v1"), jetstream.WithMsgID("dedup-probe-msg-id"))
 	require.NoError(t, err)
-	require.Equal(t, 15*time.Minute, info.Config.Duplicates)
-	require.EqualValues(t, 1, info.Config.MaxMsgsPerSubject)
+	require.False(t, firstAck.Duplicate)
+
+	_, err = kv.Ensure(ctx, js, opts)
+	require.NoError(t, err)
+
+	infoAfterSecondEnsure, err := stream.Info(ctx)
+	require.NoError(t, err)
+	require.Equal(t, infoBeforeSecondEnsure.Config, infoAfterSecondEnsure.Config)
+	require.Equal(t, 15*time.Minute, infoAfterSecondEnsure.Config.Duplicates)
+	require.EqualValues(t, 1, infoAfterSecondEnsure.Config.MaxMsgsPerSubject)
+
+	secondAck, err := js.Publish(ctx, subject, []byte("v1"), jetstream.WithMsgID("dedup-probe-msg-id"))
+	require.NoError(t, err)
+	require.True(t, secondAck.Duplicate)
 }
 
 func TestEnsureRejectsZeroReplicas(t *testing.T) {

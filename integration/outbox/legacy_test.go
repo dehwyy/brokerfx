@@ -123,6 +123,7 @@ func TestLegacyProducerFailureRevertsToPendingAndRecordsRetry(t *testing.T) {
 
 	require.Equal(t, "simulated publish failure", retries[0].Error)
 	require.Equal(t, 1, producer.CallCount())
+	require.Equal(t, outbox.StatePending, loadEvent(t, db, id).State, "event should be PENDING again after the retry row was recorded")
 }
 
 func TestLegacyStalledInFlightEventIsRepublished(t *testing.T) {

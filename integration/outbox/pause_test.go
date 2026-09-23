@@ -4,6 +4,7 @@ package outbox_test
 
 import (
 	"bytes"
+	"sync"
 	"testing"
 	"time"
 
@@ -158,7 +159,7 @@ func TestPausedRelayLogsPendingCountOnStart(t *testing.T) {
 		Payload: []byte("payload-log"),
 	})
 
-	var logs bytes.Buffer
+	var logs lockedBuffer
 	previousLogger := log.Logger
 	log.Logger = zerolog.New(&logs).With().Timestamp().Logger()
 	t.Cleanup(func() { log.Logger = previousLogger })
@@ -175,8 +176,9 @@ func TestPausedRelayLogsPendingCountOnStart(t *testing.T) {
 	harness.Start(t)
 
 	require.Eventually(t, func() bool {
-		return bytes.Contains(logs.Bytes(), []byte("outbox relay paused")) &&
-			bytes.Contains(logs.Bytes(), []byte(`"pending":1`))
+		snapshot := logs.Snapshot()
+		return bytes.Contains(snapshot, []byte("outbox relay paused")) &&
+			bytes.Contains(snapshot, []byte(`"pending":1`))
 	}, 5*time.Second, 50*time.Millisecond, "a relay that starts paused should log the PENDING count")
 }
 
@@ -215,4 +217,21 @@ func TestCleanupRunsWhilePaused(t *testing.T) {
 	require.Eventually(t, func() bool {
 		return !eventExists(t, db, id)
 	}, 5*time.Second, 50*time.Millisecond, "cleanup must keep running while the relay is paused")
+}
+
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) Snapshot() []byte {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return bytes.Clone(b.buf.Bytes())
 }

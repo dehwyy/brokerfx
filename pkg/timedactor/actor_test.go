@@ -3,6 +3,7 @@ package timedactor
 import (
 	"context"
 	"errors"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -1069,6 +1070,7 @@ func TestHold_RestoresOnFailure(t *testing.T) {
 	var currentRev atomic.Uint64
 	currentRev.Store(1)
 
+	var restoredMu sync.Mutex
 	var restoredValue []byte
 	var restoredWithRev uint64
 
@@ -1082,8 +1084,10 @@ func TestHold_RestoresOnFailure(t *testing.T) {
 		},
 		updateFn: func(_ context.Context, _ string, value []byte, last uint64) (uint64, error) {
 			currentRev.Store(last + 1)
+			restoredMu.Lock()
 			restoredValue = value
 			restoredWithRev = last
+			restoredMu.Unlock()
 			return last + 1, nil
 		},
 	}
@@ -1101,6 +1105,8 @@ func TestHold_RestoresOnFailure(t *testing.T) {
 	// Release hold WITHOUT calling Add() — simulate transaction failure.
 	holdCancel()
 	time.Sleep(200 * time.Millisecond) // let goroutine run
+	restoredMu.Lock()
+	defer restoredMu.Unlock()
 
 	// The restore CAS should have been called with holdRev=2.
 	if restoredWithRev != 2 {

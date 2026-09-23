@@ -25,6 +25,7 @@ NATS JetStream abstraction library for Go with Uber fx integration. Provides typ
     - [Consumer](#consumer)
     - [Stream](#stream)
   - [pkg/outbox](#pkgoutbox)
+  - [pkg/replywait](#pkgreplywait)
   - [pkg/timedactor](#pkgtimedactor)
 - [Full FX Wiring Example](#full-fx-wiring-example)
 - [Configuration Reference](#configuration-reference)
@@ -86,6 +87,7 @@ brokerfx/
     │           ├── consumer-opts-builder/ # Fluent consumer config builder
     │           └── middleware/            # Before/after handler middleware
     ├── outbox/                            # Transactional Outbox pattern
+    ├── replywait/                         # Request/reply over JetStream via per-pod ephemeral consumer
     └── timedactor/                        # Distributed timer scheduler
 ```
 
@@ -502,6 +504,76 @@ err := s.outboxStore.SaveMessage(ctx, outbox.KVDelete("merchant-config", merchan
 **`RequeueParked` / `Stats`.** `(*OutboxStore).RequeueParked(ctx, ids []string) (int64, error)` moves parked rows back to `PENDING` with `attempts` reset, for manual recovery. Passing a non-empty `ids` limits it to those rows; passing a nil or empty slice requeues **every** currently parked row, which matters for anything exposing this as an admin endpoint. `(*OutboxStore).Stats(ctx) (Stats, error)` returns the same counts as the `OnStats` hook, for on-demand polling (health checks, admin endpoints).
 
 **ОК-0.** `stream-opts-builder.NewDefault` (MaxAge 12h, Replicas 1, Duplicates 15m, WorkQueue) and `outbox.DefaultConfig()` are unchanged by v2 and must stay that way — v2 config lives entirely in the new, separately-opted-in fields and in `RecommendedConfig()`.
+
+---
+
+### pkg/replywait
+
+Request/reply over JetStream for a request that already has its own delivery contract (published via the Outbox, consumed by a downstream service) but needs a synchronous answer back to the caller. Each pod runs one ephemeral `OrderedConsumer` on its own reply subject and resolves waiters by `correlation_id`; there is no durable consumer per pod and no Core NATS request/reply (GW-02, D-23).
+
+#### Subjects and stream ownership
+
+`Config.ReplySubject` is the pod's own subject, at least four dot-separated tokens with no `*`, `>`, empty token, or whitespace — e.g. `balance.result.balanceapi.balanceapi-7f9c-x2`, where the last token is the pod instance (see `POD_NAME` below). `Config.Stream` is the reply stream that carries it, named per domain (e.g. `BALANCE_REPLY`).
+
+The reply stream is **owned by the domain that publishes the replies**, not by `replywait`. That owner calls `EnsureReplyStream(ctx, js, ReplyStreamOpts{Name, Subjects, Replicas, MaxAge})` — `LimitsPolicy`/`FileStorage`, `Replicas` and `MaxAge` from that service's own config (stage: 1 node; prod: 3, only after ОК-1) — to create or reconcile the stream. `replywait` itself never creates or updates a stream it doesn't own (ОК-0); it only opens an `OrderedConsumer` filtered to its own `ReplySubject` once the stream already exists — `listener.start` returns an error naming the stream when it doesn't.
+
+#### Usage
+
+```go
+import "github.com/dehwyy/brokerfx/pkg/replywait"
+
+fx.Options(
+    replywait.Module,
+    fx.Provide(func() replywait.Config {
+        return replywait.Config{
+            Stream:            "BALANCE_REPLY",
+            ReplySubject:      fmt.Sprintf("balance.result.balanceapi.%s", instance),
+            CorrelationFunc:   extractCorrelationID,
+            DefaultTimeout:    5 * time.Second,
+            InactiveThreshold: 30 * time.Second,
+            DrainTimeout:      10 * time.Second,
+        }
+    }),
+)
+
+type Opts struct {
+    fx.In
+    RW    *replywait.ReplyWaiter
+    Store *outbox.OutboxStore
+}
+
+func (s *Service) Create(ctx context.Context, req *CreateRequest) (*CreateResponse, error) {
+    msg, err := s.rw.Request(ctx, req.CorrelationID, func(ctx context.Context) error {
+        return s.txManager.Do(ctx, func(ctx context.Context) error {
+            if err := s.repo.Save(ctx, order); err != nil {
+                return err
+            }
+            return s.store.SaveMessage(ctx, outboxMessage)
+        })
+    })
+    ...
+}
+```
+
+The `publish` callback passed to `Request` must not return until the `SaveMessage` transaction has **committed**. `Request` calls `Waker.WakeupRelay()` immediately after `publish` returns, before waiting for a reply — if `publish` only queues the outbox row inside a still-open outer transaction, the wake fires before the row is visible to the relay and the request falls back to the relay's own `TickInterval` instead of an immediate wake. `*outbox.OutboxStore` satisfies `Waker` directly; `Waker` is optional on `ModuleDeps` and a nil `Waker` just skips the wake.
+
+#### Errors and `PENDING`
+
+`Request` returns `ErrTimeout` (deadline passed, `DefaultTimeout` or the caller's shorter context deadline), `ErrDrained` (`Drain` completed while this call was in flight), or `ErrDraining` (`BeginDrain` already called, no `publish` attempted). None of these are terminal failures for the caller's request: until NP-22 lands, the gateway maps all three to a `PENDING` response rather than an error (D-32) — the underlying outbox write already committed, so the eventual reply (or a client retry) still resolves it.
+
+#### Draining and `POD_NAME`
+
+`Module`'s `OnStop` hook calls `BeginDrain()` then `Drain(ctx)`: new `Request`/`Register` calls fail fast with `ErrDraining`, in-flight waiters keep waiting for `DrainTimeout` (or the passed `ctx`, whichever is shorter), then any still-inflight waiter fails with `ErrDrained` and the pod's listener stops. For this to actually catch in-flight replies instead of being cut off by SIGKILL, the pod's `terminationGracePeriodSeconds` must be **greater than** `Config.DrainTimeout`.
+
+`InstanceFromEnv()` reads `POD_NAME` and rejects an empty value or one containing `.` (`ErrInvalidInstance`) — the pod manifest must set it from the downward API, not a static value:
+
+```yaml
+env:
+  - name: POD_NAME
+    valueFrom:
+      fieldRef:
+        fieldPath: metadata.name
+```
 
 ---
 

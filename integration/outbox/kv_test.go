@@ -129,7 +129,11 @@ func TestKVBatchWithMultipleRowsForSameKeyPublishesOnlyNewest(t *testing.T) {
 	require.NoError(t, outbox.AutoMigrate(db))
 
 	js := testenv.NATS(t)
-	kv := newKVBucket(t, js, "KVFOLD")
+	kv, err := js.CreateKeyValue(context.Background(), jetstream.KeyValueConfig{
+		Bucket:  "KVFOLD",
+		History: 3,
+	})
+	require.NoError(t, err)
 
 	harness := testenv.NewRelayHarness(t, db, outbox.NewJetStreamProducer(js), outbox.Config{
 		Mode:            outbox.ModeUpdateAfterSend,
@@ -173,6 +177,13 @@ func TestKVBatchWithMultipleRowsForSameKeyPublishesOnlyNewest(t *testing.T) {
 	history, err := kv.History(context.Background(), "key1")
 	require.NoError(t, err)
 	require.Len(t, history, 1, "only the newest row should have been published to the stream")
+
+	stream, err := js.Stream(context.Background(), "KV_KVFOLD")
+	require.NoError(t, err)
+
+	info, err := stream.Info(context.Background())
+	require.NoError(t, err)
+	require.EqualValues(t, 1, info.State.LastSeq, "only one message should have reached the KV stream")
 }
 
 func TestNonKVRowsWithSameSubjectAreNotFolded(t *testing.T) {

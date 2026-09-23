@@ -107,22 +107,36 @@ func TestCleanupQueryUsesStateUpdatedAtIndex(t *testing.T) {
 	db := testenv.Postgres(t)
 	require.NoError(t, outbox.AutoMigrate(db))
 
-	require.NoError(t, db.Exec("set enable_seqscan = off").Error)
+	threshold := time.Now()
 
-	rows, err := db.Raw(
-		"explain select * from outbox_events where state = ? and updated_at < now()",
-		outbox.StateDone,
-	).Rows()
-	require.NoError(t, err)
-	defer rows.Close()
+	var plan string
+	require.NoError(t, db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Exec("set local enable_seqscan = off").Error; err != nil {
+			return err
+		}
 
-	var lines []string
-	for rows.Next() {
-		var line string
-		require.NoError(t, rows.Scan(&line))
-		lines = append(lines, line)
-	}
+		rows, err := tx.Raw(
+			"explain delete from outbox_events where state = ? and updated_at < ?",
+			outbox.StateDone,
+			threshold,
+		).Rows()
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
 
-	plan := strings.Join(lines, "\n")
+		var lines []string
+		for rows.Next() {
+			var line string
+			if err := rows.Scan(&line); err != nil {
+				return err
+			}
+			lines = append(lines, line)
+		}
+		plan = strings.Join(lines, "\n")
+
+		return rows.Err()
+	}))
+
 	require.Contains(t, plan, "idx_outbox_events_state_updated_at")
 }

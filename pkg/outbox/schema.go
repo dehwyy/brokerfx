@@ -15,7 +15,7 @@ type schemaCaps struct {
 	Retries bool
 }
 
-const v2ColumnsQuery = `select count(*) from information_schema.columns where table_name = 'outbox_events' and column_name in ('attempts', 'last_error', 'next_attempt_at', 'headers')`
+const v2ColumnsQuery = `select count(*) from information_schema.columns where table_schema = current_schema() and table_name = 'outbox_events' and column_name in ('attempts', 'last_error', 'next_attempt_at', 'headers')`
 
 const retriesTableQuery = `select to_regclass('outbox_retries')::text`
 

@@ -21,8 +21,10 @@ type OutboxRelay struct {
 	logger   zerolog.Logger
 	config   Config
 
-	schemaCapsOnce sync.Once
-	schemaCaps     schemaCaps
+	schemaCapsMu       sync.Mutex
+	schemaCaps         schemaCaps
+	schemaCapsResolved bool
+	detectSchemaFn     func(context.Context, *gorm.DB) (schemaCaps, error)
 
 	cancel context.CancelFunc
 	done   chan struct{}
@@ -41,11 +43,12 @@ func NewRelay(deps RelayDeps) *OutboxRelay {
 	}
 
 	r := &OutboxRelay{
-		store:    deps.Store,
-		producer: deps.Producer,
-		logger:   log.With().Str("component", "outbox-relay").Logger(),
-		config:   cfg,
-		done:     make(chan struct{}),
+		store:          deps.Store,
+		producer:       deps.Producer,
+		logger:         log.With().Str("component", "outbox-relay").Logger(),
+		config:         cfg,
+		detectSchemaFn: detectSchema,
+		done:           make(chan struct{}),
 	}
 
 	return r
@@ -100,19 +103,25 @@ func (r *OutboxRelay) Done() <-chan struct{} {
 }
 
 func (r *OutboxRelay) ensureSchemaCaps(ctx context.Context) schemaCaps {
-	r.schemaCapsOnce.Do(func() {
-		caps, err := detectSchema(ctx, r.store.DB())
-		if err != nil {
-			r.logger.Error().Err(err).Msg("failed to detect outbox schema")
-			return
-		}
+	r.schemaCapsMu.Lock()
+	defer r.schemaCapsMu.Unlock()
 
-		r.schemaCaps = caps
+	if r.schemaCapsResolved {
+		return r.schemaCaps
+	}
 
-		if !caps.Retries {
-			r.logger.Warn().Msg("outbox_retries missing")
-		}
-	})
+	caps, err := r.detectSchemaFn(ctx, r.store.DB())
+	if err != nil {
+		r.logger.Error().Err(err).Msg("failed to detect outbox schema, retrying on next batch")
+		return schemaCaps{}
+	}
+
+	r.schemaCaps = caps
+	r.schemaCapsResolved = true
+
+	if !caps.Retries {
+		r.logger.Warn().Msg("outbox_retries missing")
+	}
 
 	return r.schemaCaps
 }
@@ -245,7 +254,7 @@ func (r *OutboxRelay) processBatch(ctx context.Context) {
 			r.logger.Error().Err(err).Int("count", len(failedIDs)).Msg("failed to revert failed events to PENDING")
 		}
 
-		if r.schemaCaps.Retries {
+		if caps := r.ensureSchemaCaps(ctx); caps.Retries {
 			if err := db.Create(&retries).Error; err != nil {
 				r.logger.Error().Err(err).Int("count", len(retries)).Msg("failed to save to retries table")
 			}

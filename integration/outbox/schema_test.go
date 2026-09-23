@@ -3,14 +3,18 @@
 package outbox_test
 
 import (
+	"bytes"
 	"database/sql"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/dehwyy/brokerfx/integration/testenv"
 	"github.com/dehwyy/brokerfx/pkg/outbox"
 	"github.com/google/uuid"
+	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
 )
@@ -74,8 +78,6 @@ func TestSchemaV1TableWithoutRetriesPublishesLikeLegacy(t *testing.T) {
 }
 
 func TestSchemaV1TableWithoutRetriesTableToleratesPublishFailure(t *testing.T) {
-	t.Parallel()
-
 	db := testenv.Postgres(t)
 	createV1OutboxEventsTable(t, db)
 	require.False(t, regclassExists(t, db, "outbox_retries"))
@@ -93,6 +95,11 @@ func TestSchemaV1TableWithoutRetriesTableToleratesPublishFailure(t *testing.T) {
 		},
 	}
 
+	var logs bytes.Buffer
+	previousLogger := log.Logger
+	log.Logger = zerolog.New(&logs).With().Timestamp().Logger()
+	t.Cleanup(func() { log.Logger = previousLogger })
+
 	harness := testenv.NewRelayHarness(t, db, producer, outbox.Config{
 		Mode:            outbox.ModeUpdateAfterSend,
 		BatchSize:       10,
@@ -104,10 +111,20 @@ func TestSchemaV1TableWithoutRetriesTableToleratesPublishFailure(t *testing.T) {
 	harness.Wake()
 
 	require.Eventually(t, func() bool {
+		return producer.CallCount() > 0
+	}, 10*time.Second, 50*time.Millisecond, "relay should have attempted to publish the event before it is stopped")
+
+	require.Eventually(t, func() bool {
 		return loadEvent(t, db, id).State == outbox.StatePending
 	}, 10*time.Second, 100*time.Millisecond, "event should revert to PENDING even without an outbox_retries table")
 
 	require.False(t, regclassExists(t, db, "outbox_retries"), "relay must not create outbox_retries as a side effect of a failed publish")
+
+	harness.Stop()
+
+	output := logs.String()
+	require.NotContains(t, output, "42P01", "legacy tolerance must not surface a bare relation-does-not-exist error for outbox_retries")
+	require.Equal(t, 1, strings.Count(output, "outbox_retries missing"), "exactly one startup WARN should report the missing outbox_retries table")
 }
 
 func TestSchemaAutoMigrateIsIdempotentAndAddsV2ColumnsAndRetriesTable(t *testing.T) {
@@ -121,7 +138,7 @@ func TestSchemaAutoMigrateIsIdempotentAndAddsV2ColumnsAndRetriesTable(t *testing
 	var v2Columns int64
 	require.NoError(
 		t,
-		db.Raw(`select count(*) from information_schema.columns where table_name = 'outbox_events' and column_name in ('attempts', 'last_error', 'next_attempt_at', 'headers')`).
+		db.Raw(`select count(*) from information_schema.columns where table_schema = current_schema() and table_name = 'outbox_events' and column_name in ('attempts', 'last_error', 'next_attempt_at', 'headers')`).
 			Scan(&v2Columns).Error,
 	)
 	require.Equal(t, int64(4), v2Columns)

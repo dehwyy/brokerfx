@@ -64,4 +64,5 @@ type RelayDeps struct {
 	Store    *OutboxStore
 	Producer Producer
 	Config   Config `optional:"true"`
+	Signer   Signer `optional:"true"`
 }

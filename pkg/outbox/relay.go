@@ -27,6 +27,7 @@ type relayEvent struct {
 type OutboxRelay struct {
 	store    *OutboxStore
 	producer Producer
+	signer   Signer
 	logger   zerolog.Logger
 	config   Config
 
@@ -54,6 +55,7 @@ func NewRelay(deps RelayDeps) *OutboxRelay {
 	r := &OutboxRelay{
 		store:          deps.Store,
 		producer:       deps.Producer,
+		signer:         deps.Signer,
 		logger:         log.With().Str("component", "outbox-relay").Logger(),
 		config:         cfg,
 		detectSchemaFn: detectSchema,
@@ -268,6 +270,14 @@ func (r *OutboxRelay) processBatch(ctx context.Context) {
 				headers[k] = v
 			}
 			headers[jetstream.MsgIDHeader] = event.ID
+
+			if err := applySignature(r.signer, event.Topic, headers, event.Payload); err != nil {
+				results <- pubResult{
+					id:  event.ID,
+					err: err,
+				}
+				return
+			}
 
 			producerEvent := ProducerEvent{
 				Subject: event.Topic,

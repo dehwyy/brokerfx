@@ -41,6 +41,7 @@ type Config struct {
 	MaxAttempts      int
 	RetryBackoffBase time.Duration
 	RetryBackoffMax  time.Duration
+	StatsInterval    time.Duration
 }
 
 func DefaultConfig() Config {
@@ -67,6 +68,7 @@ type RelayDeps struct {
 
 	Store    *OutboxStore
 	Producer Producer
-	Config   Config `optional:"true"`
-	Signer   Signer `optional:"true"`
+	Config   Config   `optional:"true"`
+	Signer   Signer   `optional:"true"`
+	Observer Observer `optional:"true"`
 }

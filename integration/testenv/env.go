@@ -91,6 +91,12 @@ func WithSigner(signer outbox.Signer) RelayHarnessOption {
 	}
 }
 
+func WithObserver(observer outbox.Observer) RelayHarnessOption {
+	return func(deps *outbox.RelayDeps) {
+		deps.Observer = observer
+	}
+}
+
 func NewRelayHarness(t *testing.T, db *gorm.DB, producer outbox.Producer, cfg outbox.Config, opts ...RelayHarnessOption) *RelayHarness {
 	t.Helper()
 

@@ -67,6 +67,7 @@ type OutboxRelay struct {
 	store    *OutboxStore
 	producer Producer
 	signer   Signer
+	observer Observer
 	logger   zerolog.Logger
 	config   Config
 
@@ -95,6 +96,7 @@ func NewRelay(deps RelayDeps) *OutboxRelay {
 		store:          deps.Store,
 		producer:       deps.Producer,
 		signer:         deps.Signer,
+		observer:       deps.Observer,
 		logger:         log.With().Str("component", "outbox-relay").Logger(),
 		config:         cfg,
 		detectSchemaFn: detectSchema,
@@ -124,6 +126,14 @@ func (r *OutboxRelay) Run(ctx context.Context) {
 		defer cleanupTicker.Stop()
 	}
 
+	var statsTicker *time.Ticker
+	var statsChan <-chan time.Time
+	if r.observer != nil && r.config.StatsInterval > 0 {
+		statsTicker = time.NewTicker(r.config.StatsInterval)
+		statsChan = statsTicker.C
+		defer statsTicker.Stop()
+	}
+
 	r.logger.Info().
 		Int("batch_size", r.config.BatchSize).
 		Dur("tick_interval", r.config.TickInterval).
@@ -143,8 +153,24 @@ func (r *OutboxRelay) Run(ctx context.Context) {
 			r.processBatch(ctx)
 		case <-cleanupChan:
 			r.cleanupDone()
+		case <-statsChan:
+			r.sendStats(ctx)
 		}
 	}
+}
+
+func (r *OutboxRelay) sendStats(ctx context.Context) {
+	if r.observer == nil {
+		return
+	}
+
+	stats, err := r.store.Stats(ctx)
+	if err != nil {
+		r.logger.Error().Err(err).Msg("failed to compute outbox stats")
+		return
+	}
+
+	r.observer.OnStats(stats)
 }
 
 // Done returns a channel that is closed when the relay has fully stopped.
@@ -231,7 +257,8 @@ func (r *OutboxRelay) revertFailedV2(db *gorm.DB, events []relayEvent, failedOut
 	}
 
 	for _, outcome := range failedOutcomes {
-		attempts := eventByID[outcome.id].Attempts
+		ev := eventByID[outcome.id]
+		attempts := ev.Attempts
 
 		var nextAttemptAt *time.Time
 		if !isTransportError(outcome.err) {
@@ -241,8 +268,22 @@ func (r *OutboxRelay) revertFailedV2(db *gorm.DB, events []relayEvent, failedOut
 		}
 
 		errMsg := outcome.err.Error()
+		state := StatePending
+		parked := r.config.MaxAttempts > 0 && attempts >= r.config.MaxAttempts
+
+		if parked {
+			state = StateParked
+			nextAttemptAt = nil
+
+			r.logger.Error().
+				Str("event_id", outcome.id).
+				Str("subject", ev.Topic).
+				Err(outcome.err).
+				Msg("outbox event parked")
+		}
+
 		update := outboxEventRow{
-			State:         StatePending,
+			State:         state,
 			Attempts:      attempts,
 			LastError:     &errMsg,
 			NextAttemptAt: nextAttemptAt,
@@ -253,6 +294,8 @@ func (r *OutboxRelay) revertFailedV2(db *gorm.DB, events []relayEvent, failedOut
 			Select("state", "attempts", "last_error", "next_attempt_at").
 			Updates(update).Error; err != nil {
 			r.logger.Error().Err(err).Str("event_id", outcome.id).Msg("failed to record retry attempt")
+		} else if parked && r.observer != nil {
+			r.observer.OnParked(outcome.id, ev.Topic, errMsg)
 		}
 	}
 }
@@ -444,6 +487,15 @@ func (r *OutboxRelay) processBatch(ctx context.Context) {
 			if err := db.Where("id IN ?", successIDs).Delete(&OutboxEvent{}).Error; err != nil {
 				r.logger.Error().Err(err).Int("count", len(successIDs)).Msg("failed to delete published outbox events")
 			}
+		}
+	}
+
+	if r.observer != nil {
+		if len(successIDs) > 0 {
+			r.observer.OnPublished(len(successIDs))
+		}
+		if len(failedOutcomes) > 0 {
+			r.observer.OnFailed(len(failedOutcomes))
 		}
 	}
 

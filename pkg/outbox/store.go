@@ -2,9 +2,11 @@ package outbox
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"reflect"
 	"sync"
+	"time"
 
 	cryptov1 "github.com/dehwyy/brokerfx/pkg/crypto/v1"
 	"github.com/dehwyy/brokerfx/pkg/nats/jetstream/producer"
@@ -161,4 +163,66 @@ func (s *OutboxStore) WakeupChan() <-chan struct{} {
 // DB returns the underlying *gorm.DB for use by the relay.
 func (s *OutboxStore) DB() *gorm.DB {
 	return s.db
+}
+
+func (s *OutboxStore) RequeueParked(ctx context.Context, ids []string) (int64, error) {
+	query := s.db.WithContext(ctx).
+		Model(&outboxEventRow{}).
+		Where("state = ?", StateParked)
+
+	if len(ids) > 0 {
+		query = query.Where("id IN ?", ids)
+	}
+
+	res := query.Updates(map[string]any{
+		"state":           StatePending,
+		"attempts":        0,
+		"next_attempt_at": nil,
+	})
+
+	return res.RowsAffected, res.Error
+}
+
+func (s *OutboxStore) Stats(ctx context.Context) (Stats, error) {
+	var counts []struct {
+		State OutboxState
+		Count int64
+	}
+
+	if err := s.db.WithContext(ctx).
+		Model(&OutboxEvent{}).
+		Select("state, count(*) as count").
+		Group("state").
+		Scan(&counts).Error; err != nil {
+		return Stats{}, err
+	}
+
+	var stats Stats
+	for _, c := range counts {
+		switch c.State {
+		case StatePending:
+			stats.Pending = c.Count
+		case StateInFlight:
+			stats.InFlight = c.Count
+		case StateDone:
+			stats.Done = c.Count
+		case StateParked:
+			stats.Parked = c.Count
+		}
+	}
+
+	var oldestPending sql.NullTime
+	if err := s.db.WithContext(ctx).
+		Model(&OutboxEvent{}).
+		Where("state = ?", StatePending).
+		Select("min(created_at)").
+		Scan(&oldestPending).Error; err != nil {
+		return Stats{}, err
+	}
+
+	if oldestPending.Valid {
+		stats.OldestPendingAge = time.Since(oldestPending.Time)
+	}
+
+	return stats, nil
 }

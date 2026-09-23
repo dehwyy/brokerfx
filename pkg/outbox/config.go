@@ -45,6 +45,8 @@ type Config struct {
 
 	CleanupInterval time.Duration
 	RetainParked    time.Duration
+
+	Paused bool
 }
 
 func DefaultConfig() Config {

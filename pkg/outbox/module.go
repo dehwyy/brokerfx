@@ -46,7 +46,7 @@ func registerRelayLifecycle(lc fx.Lifecycle, relay *OutboxRelay) {
 
 			go relay.Run(ctx)
 
-			log.Info().Msg("outbox relay lifecycle started")
+			log.Info().Bool("paused", relay.Paused()).Msg("outbox relay lifecycle started")
 			return nil
 		},
 		OnStop: func(_ context.Context) error {

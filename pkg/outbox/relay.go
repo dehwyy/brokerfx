@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"net/textproto"
+	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	natsgo "github.com/nats-io/nats.go"
@@ -16,6 +18,15 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
+
+const envRelayPaused = "BROKERFX_OUTBOX_RELAY_PAUSED"
+
+const pauseLogInterval = time.Minute
+
+func envPaused() bool {
+	v := strings.TrimSpace(os.Getenv(envRelayPaused))
+	return strings.EqualFold(v, "true") || v == "1"
+}
 
 type relayEvent struct {
 	ID       string
@@ -76,6 +87,8 @@ type OutboxRelay struct {
 	schemaCapsResolved bool
 	detectSchemaFn     func(context.Context, *gorm.DB) (schemaCaps, error)
 
+	paused atomic.Bool
+
 	cancel context.CancelFunc
 	done   chan struct{}
 }
@@ -102,8 +115,21 @@ func NewRelay(deps RelayDeps) *OutboxRelay {
 		detectSchemaFn: detectSchema,
 		done:           make(chan struct{}),
 	}
+	r.paused.Store(cfg.Paused || envPaused())
 
 	return r
+}
+
+func (r *OutboxRelay) Pause() {
+	r.paused.Store(true)
+}
+
+func (r *OutboxRelay) Resume() {
+	r.paused.Store(false)
+}
+
+func (r *OutboxRelay) Paused() bool {
+	return r.paused.Load()
 }
 
 // Run starts the relay loop. It blocks until the context is cancelled.
@@ -133,6 +159,13 @@ func (r *OutboxRelay) Run(ctx context.Context) {
 		defer statsTicker.Stop()
 	}
 
+	pauseLogTicker := time.NewTicker(pauseLogInterval)
+	defer pauseLogTicker.Stop()
+
+	if r.Paused() {
+		r.logPausedState(ctx)
+	}
+
 	r.logger.Info().
 		Int("batch_size", r.config.BatchSize).
 		Dur("tick_interval", r.config.TickInterval).
@@ -154,8 +187,24 @@ func (r *OutboxRelay) Run(ctx context.Context) {
 			r.cleanupDone()
 		case <-statsChan:
 			r.sendStats(ctx)
+		case <-pauseLogTicker.C:
+			r.logPausedState(ctx)
 		}
 	}
+}
+
+func (r *OutboxRelay) logPausedState(ctx context.Context) {
+	if !r.Paused() {
+		return
+	}
+
+	stats, err := r.store.Stats(ctx)
+	if err != nil {
+		r.logger.Error().Err(err).Msg("failed to compute outbox stats while paused")
+		return
+	}
+
+	r.logger.Info().Int64("pending", stats.Pending).Msg("outbox relay paused")
 }
 
 func (r *OutboxRelay) sendStats(ctx context.Context) {
@@ -326,6 +375,10 @@ func (r *OutboxRelay) cleanupDone() {
 // processBatch fetches a batch of outbox events, marks them as IN_FLIGHT,
 // publishes each via the Producer concurrently, and updates the states.
 func (r *OutboxRelay) processBatch(ctx context.Context) {
+	if r.Paused() {
+		return
+	}
+
 	db := r.store.DB()
 	caps := r.ensureSchemaCaps(ctx)
 

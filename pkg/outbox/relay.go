@@ -2,6 +2,7 @@ package outbox
 
 import (
 	"context"
+	"encoding/json"
 	"sync"
 	"time"
 
@@ -11,6 +12,13 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
+
+type relayEvent struct {
+	ID      string
+	Topic   string
+	Payload []byte
+	Headers map[string]string
+}
 
 // OutboxRelay is a background worker that reads uncommitted outbox events from PostgreSQL
 // and publishes them via a Producer. It reacts to wakeup signals from the store
@@ -126,6 +134,53 @@ func (r *OutboxRelay) ensureSchemaCaps(ctx context.Context) schemaCaps {
 	return r.schemaCaps
 }
 
+func (r *OutboxRelay) lockRowsLegacy(query *gorm.DB) ([]relayEvent, error) {
+	var rows []OutboxEvent
+	if err := query.Find(&rows).Error; err != nil {
+		return nil, err
+	}
+
+	events := make([]relayEvent, len(rows))
+	for i, row := range rows {
+		events[i] = relayEvent{
+			ID:      row.ID,
+			Topic:   row.Topic,
+			Payload: row.Payload,
+		}
+	}
+
+	return events, nil
+}
+
+func (r *OutboxRelay) lockRowsV2(query *gorm.DB) ([]relayEvent, error) {
+	var rows []outboxEventRow
+	if err := query.Find(&rows).Error; err != nil {
+		return nil, err
+	}
+
+	events := make([]relayEvent, len(rows))
+	for i, row := range rows {
+		event := relayEvent{
+			ID:      row.ID,
+			Topic:   row.Topic,
+			Payload: row.Payload,
+		}
+
+		if len(row.Headers) > 0 {
+			var headers map[string]string
+			if err := json.Unmarshal(row.Headers, &headers); err != nil {
+				r.logger.Error().Err(err).Str("event_id", row.ID).Msg("failed to decode outbox event headers")
+			} else {
+				event.Headers = headers
+			}
+		}
+
+		events[i] = event
+	}
+
+	return events, nil
+}
+
 func (r *OutboxRelay) cleanupDone() {
 	db := r.store.DB()
 	threshold := time.Now().Add(-r.config.DeleteOlderThan)
@@ -141,8 +196,9 @@ func (r *OutboxRelay) cleanupDone() {
 // publishes each via the Producer concurrently, and updates the states.
 func (r *OutboxRelay) processBatch(ctx context.Context) {
 	db := r.store.DB()
+	caps := r.ensureSchemaCaps(ctx)
 
-	var events []OutboxEvent
+	var events []relayEvent
 
 	// Open a transaction to lock and update the rows to IN_FLIGHT
 	err := db.Transaction(func(tx *gorm.DB) error {
@@ -150,7 +206,7 @@ func (r *OutboxRelay) processBatch(ctx context.Context) {
 		// threshold. See Config.StallThreshold for the dedup-window invariant.
 		stalledThreshold := time.Now().Add(-r.config.StallThreshold)
 
-		err := tx.
+		locked := tx.
 			Clauses(clause.Locking{
 				Strength: "UPDATE",
 				Options:  "SKIP LOCKED",
@@ -158,9 +214,14 @@ func (r *OutboxRelay) processBatch(ctx context.Context) {
 			Where("state = ?", StatePending).
 			Or("state = ? AND updated_at < ?", StateInFlight, stalledThreshold).
 			Order("created_at ASC").
-			Limit(r.config.BatchSize).
-			Find(&events).Error
+			Limit(r.config.BatchSize)
 
+		var err error
+		if caps.V2 {
+			events, err = r.lockRowsV2(locked)
+		} else {
+			events, err = r.lockRowsLegacy(locked)
+		}
 		if err != nil {
 			return err
 		}
@@ -201,14 +262,15 @@ func (r *OutboxRelay) processBatch(ctx context.Context) {
 		event := ev
 
 		go func() {
+			headers := make(map[string]string, len(event.Headers)+1)
+			for k, v := range event.Headers {
+				headers[k] = v
+			}
+			headers[jetstream.MsgIDHeader] = event.ID
+
 			producerEvent := ProducerEvent{
 				Subject: event.Topic,
-				Headers: map[string]string{
-					// Use outbox event id as Nats-Msg-Id so JetStream dedups a redelivered
-					// publish (e.g. after a crash between ack and DB state update) within
-					// the stream's Duplicates window. Core NATS ignores it.
-					jetstream.MsgIDHeader: event.ID,
-				},
+				Headers: headers,
 				Payload: event.Payload,
 			}
 

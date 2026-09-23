@@ -2,6 +2,7 @@ package outbox
 
 import (
 	"context"
+	"encoding/json"
 	"reflect"
 
 	cryptov1 "github.com/dehwyy/brokerfx/pkg/crypto/v1"
@@ -56,6 +57,43 @@ func (s *OutboxStore) Save(ctx context.Context, event producer.Event) error {
 		Topic:   event.Subject(),
 		Payload: data,
 	}).Error
+}
+
+func (s *OutboxStore) SaveMessage(ctx context.Context, msg Message, opts ...MessageOption) error {
+	options, err := newMessageOptions(opts)
+	if err != nil {
+		return err
+	}
+
+	payload := msg.Payload
+	if payload == nil {
+		payload = []byte{}
+	}
+
+	row := outboxEventRow{
+		ID:      uuid.NewString(),
+		Topic:   msg.Subject,
+		Payload: payload,
+		State:   StatePending,
+	}
+
+	if len(options.headers) > 0 {
+		caps, err := detectSchema(ctx, s.db)
+		if err != nil {
+			return err
+		}
+		if !caps.V2 {
+			return ErrSchemaOutdated
+		}
+
+		headersJSON, err := json.Marshal(options.headers)
+		if err != nil {
+			return err
+		}
+		row.Headers = headersJSON
+	}
+
+	return s.txmanager.GetConnection(ctx).Create(&row).Error
 }
 
 // WakeupRelay sends a non-blocking signal to the relay worker, triggering

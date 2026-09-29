@@ -33,9 +33,6 @@ func New(opts Opts) (*Consumer, error) {
 		cfg,
 	)
 	if err != nil {
-		// On WorkQueue streams a consumer's filter must be unique, so an existing
-		// durable cannot be re-created/updated with a changed config (server returns
-		// "filtered consumer not unique"). Fall back to binding the existing consumer.
 		name := cfg.Name
 		if name == "" {
 			name = cfg.Durable
@@ -53,58 +50,7 @@ func New(opts Opts) (*Consumer, error) {
 
 	consumeCtx, err := consumer.Consume(
 		func(msg jetstream.Msg) {
-			go func() {
-				log.Debug().Any("subject", msg.Subject()).Msg("nats message received")
-				defer func() {
-					if r := recover(); r != nil {
-						log.Error().
-							Str("subject", msg.Subject()).
-							Any("panic", r).
-							Msg("consumer handler panic — NAK for redelivery")
-						if nakErr := msg.Nak(); nakErr != nil {
-							log.Error().Err(nakErr).Msg("failed to NAK after panic")
-						}
-					}
-				}()
-
-				ctx := context.Background()
-				var err error
-				for _, middleware := range opts.BeforeHandlerMiddleware {
-					ctx, err = middleware(ctx, msg)
-					if err != nil {
-						log.Error().Err(err).Msg("error in before handler middleware — NAK for redelivery")
-						if nakErr := msg.Nak(); nakErr != nil {
-							log.Error().Err(nakErr).Msg("failed to NAK after middleware error")
-						}
-						return
-					}
-				}
-
-				// Handler is authoritative: Ack only on success, Nak on error so JetStream
-				// redelivers the message. Handlers MUST be idempotent — Nats-Msg-Id dedup
-				// on the producer side bounds the replay risk to the Duplicates window.
-				// runWithHeartbeat keeps the ack lease alive (msg.InProgress) so a slow
-				// handler is not redelivered to a second goroutine before it finishes.
-				if err = runWithHeartbeat(ctx, msg, opts.HandlerFunc); err != nil {
-					log.Error().Err(err).Str("subject", msg.Subject()).Msg("handler failed — NAK for redelivery")
-					if nakErr := msg.Nak(); nakErr != nil {
-						log.Error().Err(nakErr).Msg("failed to NAK after handler error")
-					}
-					return
-				}
-
-				if ackErr := msg.Ack(); ackErr != nil {
-					log.Error().Err(ackErr).Str("subject", msg.Subject()).Msg("failed to ACK after successful handler")
-				}
-
-				for _, middleware := range opts.AfterHandlerMiddleware {
-					ctx, err = middleware(ctx, msg)
-					if err != nil {
-						log.Error().Err(err).Msg("error in after handler middleware (message already acked)")
-						return
-					}
-				}
-			}()
+			go process(msg, opts)
 		},
 		jetstream.PullMaxMessages(50),
 		jetstream.PullHeartbeat(10*time.Second),

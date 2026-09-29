@@ -278,3 +278,56 @@ func TestRunRejectsInvalid(t *testing.T) {
 		t.Fatalf("%+v", m)
 	}
 }
+
+type fakeStreams struct {
+	nameErr error
+}
+
+func (f fakeStreams) StreamNameBySubject(context.Context, string) (string, error) {
+	return "", f.nameErr
+}
+
+func (f fakeStreams) Stream(context.Context, string) (jetstream.Stream, error) {
+	return nil, f.nameErr
+}
+
+func TestCheckStreamClassifiesErrors(t *testing.T) {
+	cases := map[string]struct {
+		err        error
+		unsuitable bool
+	}{
+		"not found": {jetstream.ErrStreamNotFound, true},
+		"canceled":  {context.Canceled, false},
+		"deadline":  {context.DeadlineExceeded, false},
+		"timeout":   {nats.ErrTimeout, false},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			f := newFakePub()
+			p := newTestPub(t, f, fastCfg(), 1<<20)
+			p.streams = fakeStreams{nameErr: c.err}
+			src := &sliceSource{batches: [][]Item{items(1, 2)}}
+			_, err := p.Run(context.Background(), testReq, src)
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			if got := errors.Is(err, ErrStreamUnsuitable); got != c.unsuitable {
+				t.Fatalf("unsuitable=%v err=%v", got, err)
+			}
+			if !errors.Is(err, c.err) {
+				t.Fatalf("cause lost: %v", err)
+			}
+		})
+	}
+}
+
+func TestCheckStreamCanceledContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	p := newTestPub(t, newFakePub(), fastCfg(), 1<<20)
+	p.streams = fakeStreams{nameErr: ctx.Err()}
+	_, err := p.Run(ctx, testReq, &sliceSource{batches: [][]Item{items(1, 2)}})
+	if errors.Is(err, ErrStreamUnsuitable) || !errors.Is(err, context.Canceled) {
+		t.Fatalf("err %v", err)
+	}
+}

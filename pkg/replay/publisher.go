@@ -91,20 +91,24 @@ func (p *Publisher) checkStream(ctx context.Context, subject string) error {
 	}
 	name, err := p.streams.StreamNameBySubject(ctx, subject)
 	if err != nil {
-		return fmt.Errorf("%w: no stream for subject %q: %w", ErrStreamUnsuitable, subject, err)
+		return lookupError(err, fmt.Sprintf("no stream for subject %q", subject))
 	}
 	stream, err := p.streams.Stream(ctx, name)
 	if err != nil {
-		return fmt.Errorf("%w: stream %q: %w", ErrStreamUnsuitable, name, err)
+		return lookupError(err, fmt.Sprintf("stream %q", name))
 	}
-	info, err := stream.Info(ctx)
-	if err != nil {
-		return fmt.Errorf("%w: stream %q: %w", ErrStreamUnsuitable, name, err)
-	}
+	info := stream.CachedInfo()
 	if info.Config.MaxMsgsPerSubject > 0 {
 		return fmt.Errorf("%w: stream %q has MaxMsgsPerSubject %d", ErrStreamUnsuitable, name, info.Config.MaxMsgsPerSubject)
 	}
 	return nil
+}
+
+func lookupError(err error, what string) error {
+	if errors.Is(err, jetstream.ErrStreamNotFound) {
+		return fmt.Errorf("%w: %s: %w", ErrStreamUnsuitable, what, err)
+	}
+	return fmt.Errorf("replay: stream lookup: %s: %w", what, err)
 }
 
 var errMarkerFailed = errors.New("replay: end marker not published")

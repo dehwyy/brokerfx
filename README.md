@@ -202,9 +202,7 @@ BeforeMiddleware → Handler (with InProgress heartbeat) → ACK → AfterMiddle
 
 Handlers **MUST be idempotent**: producer-side `Nats-Msg-Id` dedup bounds replay to the stream `Duplicates` window, but redelivery on Nak/restart is still possible. For consumers that are not already idempotent downstream, use the opt-in [consume-side idempotency helper](#consume-side-idempotency).
 
-A handler may settle the message itself (Ack, Nak, Term or InProgress on the `jetstream.Msg` it received). If the message is already settled when the consumer acknowledges it, `ErrMsgAlreadyAckd` is treated as handled: no error log, no second settlement, and the heartbeat stops quietly.
-
-Release convention: commits use Conventional Commits. `feat` produces a minor tag, `fix` a patch tag; `BREAKING CHANGE` and `!` are not used.
+A handler may settle the message itself (Ack, Nak, NakWithDelay, Term or TermWithReason on the `jetstream.Msg` it received; InProgress does not settle the message, so the consumer still sends a normal Ack afterwards). If the message is already settled when the consumer acknowledges it, `ErrMsgAlreadyAckd` is treated as handled: no error log, no second settlement, and the heartbeat stops quietly.
 
 **Usage:**
 
@@ -517,12 +515,12 @@ err := s.outboxStore.SaveMessage(ctx, outbox.KVDelete("merchant-config", merchan
 Snapshot replay over JetStream: a publisher reads items from a `Source` and publishes one message per item to a single subject, followed by an end marker that carries the item count and status.
 
 - The stream is created by its owner, not by this package: Limits retention, `MaxMsgsPerSubject` of -1, `Replicas` and `MaxAge` from config. `NewDefault` of the stream builder is not suitable as is. `Publisher.Run` checks the stream and returns `ErrStreamUnsuitable` if it would truncate replay subjects.
-- One subject per run: the subject includes the replay id, so runs do not mix.
-- Each message carries `X-Replay-Id` and `X-Replay-Seq`; the end marker also carries `X-Replay-End`, `X-Replay-Count` and `X-Replay-Status` (`complete` or `failed`, with `X-Replay-Error` on failure). `ParseMeta` decodes them.
+- One subject per run: the caller must include the replay id in the subject, so runs do not mix; `Request.Validate` does not check this.
+- Each item message carries `X-Replay-Id` and `X-Replay-Seq`; the end marker carries `X-Replay-Id`, `X-Replay-End`, `X-Replay-Count` and `X-Replay-Status` (`complete` or `failed`, with `X-Replay-Error` on failure) and no `X-Replay-Seq`, so `ParseMeta` returns Seq 0 for it. `ParseMeta` decodes them.
 
 Reader rules:
 
-- Compare `Count` with the number of unique `Key` values received; a mismatch means the snapshot is incomplete.
+- Compare `Count` with the number of unique keys received (the key is the middle part of `Nats-Msg-Id`, `<id>:<key>:<version>`, or lives in your payload); a mismatch means the snapshot is incomplete.
 - `failed` means wait for a retry or request a new replay with a new id.
 - Set your own timeout: a run that never delivers the end marker is not signalled by the library.
 - Apply snapshots by `Version`; older versions must not overwrite newer state.
@@ -928,9 +926,10 @@ go test -race ./...
 `.github/workflows/release.yml` runs on every push to `main`:
 
 1. **Test** — `go mod tidy` + `go test -v ./...`
-2. **Release** — auto-bump semver tag and create GitHub release with changelog
+2. **Integration** — `go test -tags=integration` in `integration/`
+3. **Release** — after both are green, auto-bump semver tag and create GitHub release with changelog
 
-Every green `main` commit produces a new patch release automatically.
+Release convention: commits use Conventional Commits. `feat` produces a minor tag, `fix` a patch tag, other types a patch tag (`default_bump: patch`). `#minor` in the message is not read. `BREAKING CHANGE` and `!` are not used. Tags are set by the action and are never moved by hand.
 
 ---
 

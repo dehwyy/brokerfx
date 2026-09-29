@@ -19,6 +19,11 @@ type publishAPI interface {
 	PublishMsg(ctx context.Context, m *nats.Msg, opts ...jetstream.PublishOpt) (*jetstream.PubAck, error)
 }
 
+type streamAPI interface {
+	StreamNameBySubject(ctx context.Context, subject string) (string, error)
+	Stream(ctx context.Context, name string) (jetstream.Stream, error)
+}
+
 type Result struct {
 	Published  int64
 	Duplicates int64
@@ -27,6 +32,7 @@ type Result struct {
 
 type Publisher struct {
 	pub        publishAPI
+	streams    streamAPI
 	maxPayload func() int64
 	cfg        Config
 }
@@ -35,7 +41,12 @@ func NewPublisher(js jetstream.JetStream, cfg Config) (*Publisher, error) {
 	if js == nil {
 		return nil, errors.New("replay: jetstream is nil")
 	}
-	return newPublisher(js, func() int64 { return js.Conn().MaxPayload() }, cfg)
+	p, err := newPublisher(js, func() int64 { return js.Conn().MaxPayload() }, cfg)
+	if err != nil {
+		return nil, err
+	}
+	p.streams = js
+	return p, nil
 }
 
 func newPublisher(pub publishAPI, maxPayload func() int64, cfg Config) (*Publisher, error) {
@@ -51,6 +62,9 @@ func (p *Publisher) Run(ctx context.Context, req Request, src Source) (Result, e
 	}
 	if src == nil {
 		return Result{}, fmt.Errorf("%w: source is nil", ErrInvalidRequest)
+	}
+	if err := p.checkStream(ctx, req.Subject); err != nil {
+		return Result{}, err
 	}
 	log.Info().Str("replay_id", req.ReplayID).Str("subject", req.Subject).Msg("replay: started")
 
@@ -69,6 +83,28 @@ func (p *Publisher) Run(ctx context.Context, req Request, src Source) (Result, e
 	res.Status = StatusComplete
 	log.Info().Str("replay_id", req.ReplayID).Int64("published", res.Published).Int64("duplicates", res.Duplicates).Msg("replay: complete")
 	return res, nil
+}
+
+func (p *Publisher) checkStream(ctx context.Context, subject string) error {
+	if p.streams == nil {
+		return nil
+	}
+	name, err := p.streams.StreamNameBySubject(ctx, subject)
+	if err != nil {
+		return fmt.Errorf("%w: no stream for subject %q: %w", ErrStreamUnsuitable, subject, err)
+	}
+	stream, err := p.streams.Stream(ctx, name)
+	if err != nil {
+		return fmt.Errorf("%w: stream %q: %w", ErrStreamUnsuitable, name, err)
+	}
+	info, err := stream.Info(ctx)
+	if err != nil {
+		return fmt.Errorf("%w: stream %q: %w", ErrStreamUnsuitable, name, err)
+	}
+	if info.Config.MaxMsgsPerSubject > 0 {
+		return fmt.Errorf("%w: stream %q has MaxMsgsPerSubject %d", ErrStreamUnsuitable, name, info.Config.MaxMsgsPerSubject)
+	}
+	return nil
 }
 
 var errMarkerFailed = errors.New("replay: end marker not published")

@@ -110,13 +110,13 @@ func TestProcessNakWithDelayThenErrorIsWarnOnly(t *testing.T) {
 		return errors.New("transient")
 	}))
 	out := buf.String()
-	if 1 != strings.Count(out, "handler failed, message already settled by handler") {
+	if strings.Count(out, "handler failed, message already settled by handler") != 1 {
 		t.Fatalf("want %v got %v", 1, strings.Count(out, "handler failed, message already settled by handler"))
 	}
 	if strings.Contains(out, `"level":"error"`) {
 		t.Fatalf("unexpected %s in %s", `"level":"error"`, out)
 	}
-	if 1 != msg.count("nakdelay") {
+	if msg.count("nakdelay") != 1 {
 		t.Fatalf("want %v got %v", 1, msg.count("nakdelay"))
 	}
 }
@@ -139,7 +139,7 @@ func TestProcessTermThenNilIsQuietAndRunsAfterMiddleware(t *testing.T) {
 	if strings.Contains(buf.String(), `"level":"error"`) {
 		t.Fatalf("unexpected %s in %s", `"level":"error"`, buf.String())
 	}
-	if 1 != ran {
+	if ran != 1 {
 		t.Fatalf("want %v got %v", 1, ran)
 	}
 }
@@ -179,7 +179,7 @@ func TestProcessUnsettledErrorNaksAndLogsError(t *testing.T) {
 	buf := captureLog(t)
 	msg := &settleMsg{}
 	process(msg, handlerOf(func(jetstream.Msg) error { return errors.New("bad") }))
-	if 1 != msg.count("nak") {
+	if msg.count("nak") != 1 {
 		t.Fatalf("want %v got %v", 1, msg.count("nak"))
 	}
 	if !strings.Contains(buf.String(), `"level":"error"`) {
@@ -222,7 +222,7 @@ func TestProcessBeforeMiddlewareErrorNaksWithoutHandler(t *testing.T) {
 	if called {
 		t.Fatal("unexpected")
 	}
-	if 1 != msg.count("nak") {
+	if msg.count("nak") != 1 {
 		t.Fatalf("want %v got %v", 1, msg.count("nak"))
 	}
 }

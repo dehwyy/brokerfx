@@ -25,6 +25,7 @@ NATS JetStream abstraction library for Go with Uber fx integration. Provides typ
     - [Consumer](#consumer)
     - [Stream](#stream)
   - [pkg/outbox](#pkgoutbox)
+  - [pkg/replay](#pkgreplay)
   - [pkg/replywait](#pkgreplywait)
   - [pkg/timedactor](#pkgtimedactor)
 - [Full FX Wiring Example](#full-fx-wiring-example)
@@ -200,6 +201,10 @@ BeforeMiddleware → Handler (with InProgress heartbeat) → ACK → AfterMiddle
 ```
 
 Handlers **MUST be idempotent**: producer-side `Nats-Msg-Id` dedup bounds replay to the stream `Duplicates` window, but redelivery on Nak/restart is still possible. For consumers that are not already idempotent downstream, use the opt-in [consume-side idempotency helper](#consume-side-idempotency).
+
+A handler may settle the message itself (Ack, Nak, Term or InProgress on the `jetstream.Msg` it received). If the message is already settled when the consumer acknowledges it, `ErrMsgAlreadyAckd` is treated as handled: no error log, no second settlement, and the heartbeat stops quietly.
+
+Release convention: commits use Conventional Commits. `feat` produces a minor tag, `fix` a patch tag; `BREAKING CHANGE` and `!` are not used.
 
 **Usage:**
 
@@ -504,6 +509,23 @@ err := s.outboxStore.SaveMessage(ctx, outbox.KVDelete("merchant-config", merchan
 **`RequeueParked` / `Stats`.** `(*OutboxStore).RequeueParked(ctx, ids []string) (int64, error)` moves parked rows back to `PENDING` with `attempts` reset, for manual recovery. Passing a non-empty `ids` limits it to those rows; passing a nil or empty slice requeues **every** currently parked row, which matters for anything exposing this as an admin endpoint. `(*OutboxStore).Stats(ctx) (Stats, error)` returns the same counts as the `OnStats` hook, for on-demand polling (health checks, admin endpoints).
 
 **ОК-0.** `stream-opts-builder.NewDefault` (MaxAge 12h, Replicas 1, Duplicates 15m, WorkQueue) and `outbox.DefaultConfig()` are unchanged by v2 and must stay that way — v2 config lives entirely in the new, separately-opted-in fields and in `RecommendedConfig()`.
+
+---
+
+### pkg/replay
+
+Snapshot replay over JetStream: a publisher reads items from a `Source` and publishes one message per item to a single subject, followed by an end marker that carries the item count and status.
+
+- The stream is created by its owner, not by this package: Limits retention, `MaxMsgsPerSubject` of -1, `Replicas` and `MaxAge` from config. `NewDefault` of the stream builder is not suitable as is. `Publisher.Run` checks the stream and returns `ErrStreamUnsuitable` if it would truncate replay subjects.
+- One subject per run: the subject includes the replay id, so runs do not mix.
+- Each message carries `X-Replay-Id` and `X-Replay-Seq`; the end marker also carries `X-Replay-End`, `X-Replay-Count` and `X-Replay-Status` (`complete` or `failed`, with `X-Replay-Error` on failure). `ParseMeta` decodes them.
+
+Reader rules:
+
+- Compare `Count` with the number of unique `Key` values received; a mismatch means the snapshot is incomplete.
+- `failed` means wait for a retry or request a new replay with a new id.
+- Set your own timeout: a run that never delivers the end marker is not signalled by the library.
+- Apply snapshots by `Version`; older versions must not overwrite newer state.
 
 ---
 

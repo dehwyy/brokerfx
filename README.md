@@ -325,7 +325,7 @@ import (
 streamOpts := streambuilder.NewDefault().
     WithName("paylonium-orders").
     WithSubjects("orders.>", "payments.>").
-    WithMaxBytes(2 * 1024 * 1024 * 1024). // 2 GB
+    WithMaxBytes(512 * 1024 * 1024). // 512 MiB
     WithMaxAge(12 * time.Hour).
     WithReplicas(3).
     Build()
@@ -345,13 +345,17 @@ fx.Provide(
 | Setting | Default |
 |---|---|
 | Storage | `FileStorage` |
-| MaxBytes | `2 GB` |
+| MaxBytes | `256 MiB` (override: `BROKERFX_STREAM_MAX_BYTES`) |
 | MaxAge | `12 hours` |
 | Retention | `WorkQueuePolicy` |
 | MaxMsgsPerSubject | `1,000` |
 | Compression | `S2Compression` |
 | Replicas | `1` |
 | Duplicates | `15 minutes` |
+
+**MaxBytes resolution.** Priority: explicit `WithMaxBytes` > env `BROKERFX_STREAM_MAX_BYTES` (positive integer, bytes) > `256 MiB`. The env is read in `NewDefault()`. A malformed or non-positive value is never replaced by the default: `Err()` returns `ErrInvalidMaxBytesEnv`, `jsstream.New` returns it, and `Build()` panics. The check applies even when `WithMaxBytes` is set.
+
+**Shrinking an existing stream.** `jsstream.New` never lowers `max_bytes` in a way that could drop messages. If the stream already exists, the requested limit is below its current one (unlimited counts as the highest) and `State.Bytes` is greater than half of the requested limit, the current `max_bytes` is kept and a `warn` is logged with the stream name and both figures. Raising the limit, or lowering it while the stream holds at most half of the new limit, is applied as before. Services that build a raw `jetstream.StreamConfig` can get the same guard through `jsstream.CreateOrUpdate(ctx, js, cfg)` and the same env through `streambuilder.MaxBytesFromEnv()`. KV buckets (`kv.Ensure`) do not use the builder and are not affected by the env.
 
 > **Dedup invariant:** the `Duplicates` window must be `>= 2 ×` the outbox relay
 > `StallThreshold` (default 5m). The relay re-publishes a stalled IN_FLIGHT row with
@@ -850,7 +854,7 @@ func main() {
 | Setting | Default |
 |---|---|
 | Storage | `FileStorage` |
-| MaxBytes | `2 GB` |
+| MaxBytes | `256 MiB` (override: `BROKERFX_STREAM_MAX_BYTES`) |
 | MaxAge | `12 hours` |
 | Retention | `WorkQueuePolicy` |
 | MaxMsgsPerSubject | `1,000` |

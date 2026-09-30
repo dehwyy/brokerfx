@@ -1,20 +1,51 @@
 package streamoptsbuilder
 
 import (
+	"errors"
+	"fmt"
+	"os"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/nats-io/nats.go/jetstream"
 )
 
+const (
+	DefaultMaxBytes int64 = 256 << 20
+
+	EnvMaxBytes = "BROKERFX_STREAM_MAX_BYTES"
+)
+
+var ErrInvalidMaxBytesEnv = errors.New("streamoptsbuilder: invalid " + EnvMaxBytes)
+
 type StreamOptsBuilder struct {
 	config jetstream.StreamConfig
+	err    error
+}
+
+func MaxBytesFromEnv() (int64, error) {
+	raw := strings.TrimSpace(os.Getenv(EnvMaxBytes))
+	if raw == "" {
+		return DefaultMaxBytes, nil
+	}
+
+	value, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || value <= 0 {
+		return DefaultMaxBytes, fmt.Errorf("%w: %q is not a positive integer number of bytes", ErrInvalidMaxBytesEnv, raw)
+	}
+
+	return value, nil
 }
 
 func NewDefault() *StreamOptsBuilder {
+	maxBytes, err := MaxBytesFromEnv()
+
 	return &StreamOptsBuilder{
+		err: err,
 		config: jetstream.StreamConfig{
 			Storage:           jetstream.FileStorage,
-			MaxBytes:          2 << 30,
+			MaxBytes:          maxBytes,
 			MaxAge:            12 * time.Hour,
 			Retention:         jetstream.WorkQueuePolicy,
 			MaxMsgsPerSubject: 1_000,
@@ -30,7 +61,14 @@ func NewDefault() *StreamOptsBuilder {
 	}
 }
 
+func (b *StreamOptsBuilder) Err() error {
+	return b.err
+}
+
 func (b *StreamOptsBuilder) Build() jetstream.StreamConfig {
+	if b.err != nil {
+		panic(b.err)
+	}
 	if b.config.Name == "" {
 		panic("name is required")
 	}

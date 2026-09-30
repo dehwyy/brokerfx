@@ -202,3 +202,127 @@ func TestCreateOrUpdateGuardsRawConfig(t *testing.T) {
 	require.Equal(t, int64(64*mib), info.Config.MaxBytes)
 	require.Equal(t, uint64(16), info.State.Msgs)
 }
+
+func newRoleStream(t *testing.T, js jetstream.JetStream, name string, role streamoptsbuilder.Role) {
+	t.Helper()
+
+	builder := streamoptsbuilder.NewDefault().
+		WithName(name).
+		WithSubjects([]string{name + ".>"}).
+		WithRole(role)
+
+	_, err := stream.New(stream.Opts{JetStream: js, StreamOptsBuilder: builder})
+	require.NoError(t, err)
+}
+
+func publishUntilError(js jetstream.JetStream, name string, limit int) (published int, err error) {
+	payload := bytes.Repeat([]byte("x"), 256*1024)
+	for published < limit {
+		if _, err = js.Publish(context.Background(), name+".data", payload); err != nil {
+			return published, err
+		}
+		published++
+	}
+
+	return published, nil
+}
+
+func TestRoleCreatesStreamWithRoleLimits(t *testing.T) {
+	t.Setenv(streamoptsbuilder.EnvMaxBytes, "")
+	t.Setenv(streamoptsbuilder.EnvCriticalMaxBytes, "")
+	js := testenv.NATS(t)
+
+	newRoleStream(t, js, "RL_CMD", streamoptsbuilder.RoleCommand)
+	newRoleStream(t, js, "RL_EVT", streamoptsbuilder.RoleEvent)
+
+	cmd := streamInfo(t, js, "RL_CMD").Config
+	require.Equal(t, int64(1024*mib), cmd.MaxBytes)
+	require.Equal(t, jetstream.DiscardNew, cmd.Discard)
+
+	evt := streamInfo(t, js, "RL_EVT").Config
+	require.Equal(t, int64(256*mib), evt.MaxBytes)
+	require.Equal(t, jetstream.DiscardOld, evt.Discard)
+}
+
+func TestCriticalStreamRejectsPublishWhenFull(t *testing.T) {
+	t.Setenv(streamoptsbuilder.EnvMaxBytes, "")
+	t.Setenv(streamoptsbuilder.EnvCriticalMaxBytes, "2097152")
+	js := testenv.NATS(t)
+
+	newRoleStream(t, js, "RL_FULL_CMD", streamoptsbuilder.RoleCommand)
+
+	published, err := publishUntilError(js, "RL_FULL_CMD", 64)
+	require.Error(t, err, "DiscardNew must reject the publish instead of dropping data")
+	require.Positive(t, published)
+
+	info := streamInfo(t, js, "RL_FULL_CMD")
+	require.Equal(t, uint64(published), info.State.Msgs, "no stored message may be dropped")
+	require.Equal(t, uint64(1), info.State.FirstSeq)
+}
+
+func TestEventStreamDropsOldestWhenFull(t *testing.T) {
+	t.Setenv(streamoptsbuilder.EnvMaxBytes, "2097152")
+	t.Setenv(streamoptsbuilder.EnvCriticalMaxBytes, "")
+	js := testenv.NATS(t)
+
+	newRoleStream(t, js, "RL_FULL_EVT", streamoptsbuilder.RoleEvent)
+
+	published, err := publishUntilError(js, "RL_FULL_EVT", 64)
+	require.NoError(t, err)
+	require.Equal(t, 64, published)
+
+	info := streamInfo(t, js, "RL_FULL_EVT")
+	require.Less(t, info.State.Msgs, uint64(64))
+	require.Greater(t, info.State.FirstSeq, uint64(1))
+}
+
+// A live legacy stream (2 GiB, DiscardOld) that gets a critical role at the next start must
+// neither fail the start nor lose data: Discard flips to New, max_bytes follows the shrink guard.
+func TestRoleSwitchOnLiveLegacyStreamEmptyShrinks(t *testing.T) {
+	t.Setenv(streamoptsbuilder.EnvMaxBytes, "")
+	t.Setenv(streamoptsbuilder.EnvCriticalMaxBytes, "")
+	js := testenv.NATS(t)
+
+	newStream(t, js, "RL_LEGACY_EMPTY", 2048*mib)
+	require.Equal(t, jetstream.DiscardOld, streamInfo(t, js, "RL_LEGACY_EMPTY").Config.Discard)
+
+	newRoleStream(t, js, "RL_LEGACY_EMPTY", streamoptsbuilder.RoleDLQ)
+
+	cfg := streamInfo(t, js, "RL_LEGACY_EMPTY").Config
+	require.Equal(t, jetstream.DiscardNew, cfg.Discard)
+	require.Equal(t, int64(1024*mib), cfg.MaxBytes)
+}
+
+func TestRoleSwitchOnLiveLegacyStreamKeepsLimitWhenDataExceedsHalf(t *testing.T) {
+	t.Setenv(streamoptsbuilder.EnvMaxBytes, "")
+	t.Setenv(streamoptsbuilder.EnvCriticalMaxBytes, "2097152")
+	js := testenv.NATS(t)
+
+	newStream(t, js, "RL_LEGACY_DATA", 64*mib)
+	fill(t, js, "RL_LEGACY_DATA", 8)
+	before := streamInfo(t, js, "RL_LEGACY_DATA")
+
+	newRoleStream(t, js, "RL_LEGACY_DATA", streamoptsbuilder.RoleResult)
+
+	after := streamInfo(t, js, "RL_LEGACY_DATA")
+	require.Equal(t, jetstream.DiscardNew, after.Config.Discard)
+	require.Equal(t, int64(64*mib), after.Config.MaxBytes, "shrink below half of stored data must be refused")
+	require.Equal(t, before.State.Msgs, after.State.Msgs)
+	require.Equal(t, before.State.Bytes, after.State.Bytes)
+}
+
+func TestRoleSwitchEventToCriticalAndBackOnLiveStream(t *testing.T) {
+	t.Setenv(streamoptsbuilder.EnvMaxBytes, "")
+	t.Setenv(streamoptsbuilder.EnvCriticalMaxBytes, "")
+	js := testenv.NATS(t)
+
+	newRoleStream(t, js, "RL_ROLLBACK", streamoptsbuilder.RoleCommand)
+	fill(t, js, "RL_ROLLBACK", 4)
+
+	newRoleStream(t, js, "RL_ROLLBACK", streamoptsbuilder.RoleEvent)
+
+	cfg := streamInfo(t, js, "RL_ROLLBACK").Config
+	require.Equal(t, jetstream.DiscardOld, cfg.Discard)
+	require.Equal(t, int64(256*mib), cfg.MaxBytes)
+	require.Equal(t, uint64(4), streamInfo(t, js, "RL_ROLLBACK").State.Msgs)
+}

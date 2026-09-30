@@ -98,3 +98,151 @@ func TestInvalidEnvSurvivesExplicitMaxBytes(t *testing.T) {
 		t.Fatalf("err %v", b.Err())
 	}
 }
+
+var allRoles = []Role{RoleEvent, RoleCommand, RoleResult, RoleReply, RoleDLQ}
+
+func clearEnv(t *testing.T) {
+	t.Helper()
+	t.Setenv(EnvMaxBytes, "")
+	t.Setenv(EnvCriticalMaxBytes, "")
+}
+
+func roleBuilder(role Role) *StreamOptsBuilder {
+	return NewDefault().WithName("S").WithSubjects([]string{"s.>"}).WithRole(role)
+}
+
+func TestRoleDefaultsToEvent(t *testing.T) {
+	clearEnv(t)
+
+	cfg := NewDefault().WithName("S").WithSubjects([]string{"s.>"}).Build()
+	if cfg.MaxBytes != 256<<20 || cfg.Discard != jetstream.DiscardOld {
+		t.Fatalf("got (%d, %v), want 256 MiB / DiscardOld", cfg.MaxBytes, cfg.Discard)
+	}
+}
+
+func TestRoleLimits(t *testing.T) {
+	clearEnv(t)
+
+	tests := []struct {
+		role        Role
+		wantMax     int64
+		wantDiscard jetstream.DiscardPolicy
+	}{
+		{RoleEvent, 256 << 20, jetstream.DiscardOld},
+		{RoleCommand, 1 << 30, jetstream.DiscardNew},
+		{RoleResult, 1 << 30, jetstream.DiscardNew},
+		{RoleReply, 1 << 30, jetstream.DiscardNew},
+		{RoleDLQ, 1 << 30, jetstream.DiscardNew},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.role.String(), func(t *testing.T) {
+			cfg := roleBuilder(tt.role).Build()
+			if cfg.MaxBytes != tt.wantMax || cfg.Discard != tt.wantDiscard {
+				t.Fatalf("builder got (%d, %v), want (%d, %v)", cfg.MaxBytes, cfg.Discard, tt.wantMax, tt.wantDiscard)
+			}
+
+			limits, err := LimitsFor(tt.role)
+			if err != nil {
+				t.Fatalf("LimitsFor err %v", err)
+			}
+			if limits.MaxBytes != tt.wantMax || limits.Discard != tt.wantDiscard {
+				t.Fatalf("LimitsFor got %+v", limits)
+			}
+		})
+	}
+}
+
+func TestRoleEnvOverridesAreIndependent(t *testing.T) {
+	t.Setenv(EnvMaxBytes, "10485760")
+	t.Setenv(EnvCriticalMaxBytes, "20971520")
+
+	if got := roleBuilder(RoleEvent).Build().MaxBytes; got != 10<<20 {
+		t.Fatalf("event max bytes %d", got)
+	}
+	for _, role := range []Role{RoleCommand, RoleResult, RoleReply, RoleDLQ} {
+		if got := roleBuilder(role).Build().MaxBytes; got != 20<<20 {
+			t.Fatalf("%v max bytes %d", role, got)
+		}
+	}
+}
+
+func TestExplicitMaxBytesWinsOverRoleInAnyOrder(t *testing.T) {
+	clearEnv(t)
+
+	before := NewDefault().WithName("S").WithSubjects([]string{"s.>"}).WithMaxBytes(5 << 20).WithRole(RoleCommand).Build()
+	after := NewDefault().WithName("S").WithSubjects([]string{"s.>"}).WithRole(RoleCommand).WithMaxBytes(5 << 20).Build()
+	for _, cfg := range []jetstream.StreamConfig{before, after} {
+		if cfg.MaxBytes != 5<<20 {
+			t.Fatalf("max bytes %d", cfg.MaxBytes)
+		}
+		if cfg.Discard != jetstream.DiscardNew {
+			t.Fatalf("discard %v, role policy must still apply", cfg.Discard)
+		}
+	}
+}
+
+func TestExplicitDiscardWinsOverRoleInAnyOrder(t *testing.T) {
+	clearEnv(t)
+
+	before := NewDefault().WithName("S").WithSubjects([]string{"s.>"}).WithDiscard(jetstream.DiscardOld).WithRole(RoleCommand).Build()
+	after := NewDefault().WithName("S").WithSubjects([]string{"s.>"}).WithRole(RoleCommand).WithDiscard(jetstream.DiscardOld).Build()
+	for _, cfg := range []jetstream.StreamConfig{before, after} {
+		if cfg.Discard != jetstream.DiscardOld {
+			t.Fatalf("discard %v", cfg.Discard)
+		}
+		if cfg.MaxBytes != 1<<30 {
+			t.Fatalf("max bytes %d, role limit must still apply", cfg.MaxBytes)
+		}
+	}
+}
+
+func TestLastRoleWins(t *testing.T) {
+	clearEnv(t)
+
+	cfg := roleBuilder(RoleCommand).WithRole(RoleEvent).Build()
+	if cfg.MaxBytes != 256<<20 || cfg.Discard != jetstream.DiscardOld {
+		t.Fatalf("got (%d, %v)", cfg.MaxBytes, cfg.Discard)
+	}
+}
+
+func TestUnknownRoleIsError(t *testing.T) {
+	clearEnv(t)
+
+	for _, role := range []Role{-1, Role(len(allRoles))} {
+		b := roleBuilder(role)
+		if !errors.Is(b.Err(), ErrUnknownRole) {
+			t.Fatalf("role %d: err %v, want ErrUnknownRole", role, b.Err())
+		}
+		if _, err := LimitsFor(role); !errors.Is(err, ErrUnknownRole) {
+			t.Fatalf("role %d: LimitsFor err %v", role, err)
+		}
+	}
+}
+
+func TestInvalidCriticalEnvIsErrorForEveryRole(t *testing.T) {
+	for _, raw := range []string{"abc", "-1", "0", "1GiB"} {
+		t.Run(raw, func(t *testing.T) {
+			t.Setenv(EnvMaxBytes, "")
+			t.Setenv(EnvCriticalMaxBytes, raw)
+
+			for _, role := range allRoles {
+				if err := roleBuilder(role).Err(); !errors.Is(err, ErrInvalidMaxBytesEnv) {
+					t.Fatalf("role %v: err %v, want ErrInvalidMaxBytesEnv", role, err)
+				}
+				if _, err := LimitsFor(role); !errors.Is(err, ErrInvalidMaxBytesEnv) {
+					t.Fatalf("role %v: LimitsFor err %v", role, err)
+				}
+			}
+		})
+	}
+}
+
+func TestDefaultConstants(t *testing.T) {
+	if DefaultCriticalMaxBytes != 1<<30 {
+		t.Fatalf("critical default %d, want 1 GiB", DefaultCriticalMaxBytes)
+	}
+	if !RoleCommand.Critical() || !RoleResult.Critical() || !RoleReply.Critical() || !RoleDLQ.Critical() || RoleEvent.Critical() {
+		t.Fatal("only command/result/reply/DLQ roles are critical")
+	}
+}

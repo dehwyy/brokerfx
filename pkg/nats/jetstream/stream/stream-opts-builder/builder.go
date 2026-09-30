@@ -12,40 +12,139 @@ import (
 )
 
 const (
+	// DefaultMaxBytes is the max_bytes of RoleEvent streams (the default role).
 	DefaultMaxBytes int64 = 256 << 20
+	// DefaultCriticalMaxBytes is the max_bytes of command, result, reply and DLQ streams.
+	DefaultCriticalMaxBytes int64 = 1 << 30
 
+	// EnvMaxBytes overrides DefaultMaxBytes (event streams).
 	EnvMaxBytes = "BROKERFX_STREAM_MAX_BYTES"
+	// EnvCriticalMaxBytes overrides DefaultCriticalMaxBytes (command, result, reply, DLQ streams).
+	EnvCriticalMaxBytes = "BROKERFX_STREAM_MAX_BYTES_CRITICAL"
 )
 
-var ErrInvalidMaxBytesEnv = errors.New("streamoptsbuilder: invalid " + EnvMaxBytes)
+var (
+	ErrInvalidMaxBytesEnv = errors.New("streamoptsbuilder: invalid max bytes env")
+	ErrUnknownRole        = errors.New("streamoptsbuilder: unknown stream role")
+)
+
+// Role is the explicit purpose of a stream. It selects the limit policy: losing a message on a
+// critical stream is a failure, while an event stream may shed its oldest data.
+type Role int
+
+const (
+	// RoleEvent is the zero value and the default: 256 MiB, DiscardOld.
+	RoleEvent Role = iota
+	// RoleCommand, RoleResult, RoleReply and RoleDLQ are critical: 1 GiB, DiscardNew. A full
+	// stream rejects the publish and the outbox retries it instead of silently dropping data.
+	RoleCommand
+	RoleResult
+	RoleReply
+	RoleDLQ
+)
+
+func (r Role) valid() bool {
+	return r >= RoleEvent && r <= RoleDLQ
+}
+
+// Critical reports whether the role gets the critical limits (DiscardNew, larger max_bytes).
+func (r Role) Critical() bool {
+	return r.valid() && r != RoleEvent
+}
+
+func (r Role) String() string {
+	switch r {
+	case RoleEvent:
+		return "event"
+	case RoleCommand:
+		return "command"
+	case RoleResult:
+		return "result"
+	case RoleReply:
+		return "reply"
+	case RoleDLQ:
+		return "dlq"
+	default:
+		return fmt.Sprintf("role(%d)", int(r))
+	}
+}
+
+// Limits is the role-dependent part of a stream config.
+type Limits struct {
+	MaxBytes int64
+	Discard  jetstream.DiscardPolicy
+}
 
 type StreamOptsBuilder struct {
 	config jetstream.StreamConfig
 	err    error
+
+	role             Role
+	eventMaxBytes    int64
+	criticalMaxBytes int64
+	maxBytesExplicit bool
+	discardExplicit  bool
 }
 
-func MaxBytesFromEnv() (int64, error) {
-	raw := strings.TrimSpace(os.Getenv(EnvMaxBytes))
+func bytesFromEnv(name string, fallback int64) (int64, error) {
+	raw := strings.TrimSpace(os.Getenv(name))
 	if raw == "" {
-		return DefaultMaxBytes, nil
+		return fallback, nil
 	}
 
 	value, err := strconv.ParseInt(raw, 10, 64)
 	if err != nil || value <= 0 {
-		return DefaultMaxBytes, fmt.Errorf("%w: %q is not a positive integer number of bytes", ErrInvalidMaxBytesEnv, raw)
+		return fallback, fmt.Errorf("%w: %s=%q is not a positive integer number of bytes", ErrInvalidMaxBytesEnv, name, raw)
 	}
 
 	return value, nil
 }
 
-func NewDefault() *StreamOptsBuilder {
-	maxBytes, err := MaxBytesFromEnv()
+// MaxBytesFromEnv returns the event-stream limit: BROKERFX_STREAM_MAX_BYTES or DefaultMaxBytes.
+func MaxBytesFromEnv() (int64, error) {
+	return bytesFromEnv(EnvMaxBytes, DefaultMaxBytes)
+}
 
-	return &StreamOptsBuilder{
-		err: err,
+// CriticalMaxBytesFromEnv returns the critical-stream limit: BROKERFX_STREAM_MAX_BYTES_CRITICAL
+// or DefaultCriticalMaxBytes.
+func CriticalMaxBytesFromEnv() (int64, error) {
+	return bytesFromEnv(EnvCriticalMaxBytes, DefaultCriticalMaxBytes)
+}
+
+// LimitsFor returns max_bytes and discard policy of a role, for services that build a raw
+// jetstream.StreamConfig instead of using the builder. Both env variables are validated
+// regardless of the role.
+func LimitsFor(role Role) (Limits, error) {
+	eventMax, eventErr := MaxBytesFromEnv()
+	criticalMax, criticalErr := CriticalMaxBytesFromEnv()
+	if err := errors.Join(eventErr, criticalErr); err != nil {
+		return Limits{}, err
+	}
+
+	return limitsFor(role, eventMax, criticalMax)
+}
+
+func limitsFor(role Role, eventMax, criticalMax int64) (Limits, error) {
+	switch {
+	case !role.valid():
+		return Limits{}, fmt.Errorf("%w: %d", ErrUnknownRole, int(role))
+	case role.Critical():
+		return Limits{MaxBytes: criticalMax, Discard: jetstream.DiscardNew}, nil
+	default:
+		return Limits{MaxBytes: eventMax, Discard: jetstream.DiscardOld}, nil
+	}
+}
+
+func NewDefault() *StreamOptsBuilder {
+	eventMax, eventErr := MaxBytesFromEnv()
+	criticalMax, criticalErr := CriticalMaxBytesFromEnv()
+
+	b := &StreamOptsBuilder{
+		err:              errors.Join(eventErr, criticalErr),
+		eventMaxBytes:    eventMax,
+		criticalMaxBytes: criticalMax,
 		config: jetstream.StreamConfig{
 			Storage:           jetstream.FileStorage,
-			MaxBytes:          maxBytes,
 			MaxAge:            12 * time.Hour,
 			Retention:         jetstream.WorkQueuePolicy,
 			MaxMsgsPerSubject: 1_000,
@@ -59,6 +158,35 @@ func NewDefault() *StreamOptsBuilder {
 			Duplicates: 15 * time.Minute,
 		},
 	}
+
+	return b.WithRole(RoleEvent)
+}
+
+// WithRole sets the stream role and applies its limits. An explicit WithMaxBytes or
+// WithDiscard wins over the role in either call order. The last WithRole call wins.
+func (b *StreamOptsBuilder) WithRole(role Role) *StreamOptsBuilder {
+	limits, err := limitsFor(role, b.eventMaxBytes, b.criticalMaxBytes)
+	if err != nil {
+		b.err = errors.Join(b.err, err)
+		return b
+	}
+
+	b.role = role
+	if !b.maxBytesExplicit {
+		b.config.MaxBytes = limits.MaxBytes
+	}
+	if !b.discardExplicit {
+		b.config.Discard = limits.Discard
+	}
+
+	return b
+}
+
+// WithDiscard sets the discard policy explicitly, overriding the role's policy.
+func (b *StreamOptsBuilder) WithDiscard(discard jetstream.DiscardPolicy) *StreamOptsBuilder {
+	b.config.Discard = discard
+	b.discardExplicit = true
+	return b
 }
 
 func (b *StreamOptsBuilder) Err() error {
@@ -150,6 +278,7 @@ func (b *StreamOptsBuilder) WithMaxBytes(
 	maxBytes int64,
 ) *StreamOptsBuilder {
 	b.config.MaxBytes = maxBytes
+	b.maxBytesExplicit = true
 	return b
 }
 

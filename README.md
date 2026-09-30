@@ -345,7 +345,8 @@ fx.Provide(
 | Setting | Default |
 |---|---|
 | Storage | `FileStorage` |
-| MaxBytes | `256 MiB` (override: `BROKERFX_STREAM_MAX_BYTES`) |
+| MaxBytes | `256 MiB` for `RoleEvent` (override: `BROKERFX_STREAM_MAX_BYTES`); `1 GiB` for command/result/reply/DLQ roles (override: `BROKERFX_STREAM_MAX_BYTES_CRITICAL`) |
+| Discard | `DiscardOld` for `RoleEvent`; `DiscardNew` for command/result/reply/DLQ roles |
 | MaxAge | `12 hours` |
 | Retention | `WorkQueuePolicy` |
 | MaxMsgsPerSubject | `1,000` |
@@ -353,9 +354,13 @@ fx.Provide(
 | Replicas | `1` |
 | Duplicates | `15 minutes` |
 
-**MaxBytes resolution.** Priority: explicit `WithMaxBytes` > env `BROKERFX_STREAM_MAX_BYTES` (positive integer, bytes) > `256 MiB`. The env is read in `NewDefault()`. A malformed or non-positive value is never replaced by the default: `Err()` returns `ErrInvalidMaxBytesEnv`, `jsstream.New` returns it, and `Build()` panics. The check applies even when `WithMaxBytes` is set.
+**Stream role (NF-D-192).** `WithRole(streamoptsbuilder.RoleX)` selects the limit policy explicitly; there is no guessing from the stream name. `RoleEvent` (the default when `WithRole` is not called) gets `256 MiB` and `DiscardOld`. `RoleCommand`, `RoleResult`, `RoleReply` and `RoleDLQ` get `1 GiB` and `DiscardNew`: a full stream rejects the publish with an error and the outbox retries it, instead of silently dropping the oldest message. The last `WithRole` call wins. An unknown role makes `Err()` return `ErrUnknownRole`. Services that build a raw `jetstream.StreamConfig` take the same numbers from `streambuilder.LimitsFor(role)`.
 
-**Shrinking an existing stream.** `jsstream.New` never lowers `max_bytes` in a way that could drop messages. If the stream already exists, the requested limit is below its current one (unlimited counts as the highest) and `State.Bytes` is greater than half of the requested limit, the current `max_bytes` is kept and a `warn` is logged with the stream name and both figures. Raising the limit, or lowering it while the stream holds at most half of the new limit, is applied as before. Services that build a raw `jetstream.StreamConfig` can get the same guard through `jsstream.CreateOrUpdate(ctx, js, cfg)` and the same env through `streambuilder.MaxBytesFromEnv()`. KV buckets (`kv.Ensure`) do not use the builder and are not affected by the env.
+**MaxBytes resolution.** Priority: explicit `WithMaxBytes` > env of the role's class > role default. The classes are `BROKERFX_STREAM_MAX_BYTES` (event, default `256 MiB`) and `BROKERFX_STREAM_MAX_BYTES_CRITICAL` (command/result/reply/DLQ, default `1 GiB`); both are positive integers in bytes and are read in `NewDefault()`. A malformed or non-positive value of either variable is never replaced by the default: `Err()` returns `ErrInvalidMaxBytesEnv`, `jsstream.New` returns it, and `Build()` panics. The check applies for every role and even when `WithMaxBytes` is set. An explicit `WithDiscard` wins over the role policy in either call order, as `WithMaxBytes` does.
+
+**Reserve.** JetStream reserves `max_bytes` of every stream against the server's `max_file_store`; in a cluster each server counts one `max_bytes` per stream replica it hosts. Before raising the critical limit, sum `max_bytes` of all streams on the smallest server.
+
+**Shrinking an existing stream.** `jsstream.New` never lowers `max_bytes` in a way that could drop messages. If the stream already exists, the requested limit is below its current one (unlimited counts as the highest) and `State.Bytes` is greater than half of the requested limit, the current `max_bytes` is kept and a `warn` is logged with the stream name and both figures. Raising the limit, or lowering it while the stream holds at most half of the new limit, is applied as before. A role change on a live stream (for example `DiscardOld` to `DiscardNew`) is applied by the same update and never fails the start; the max_bytes part of it still goes through the guard above. Services that build a raw `jetstream.StreamConfig` can get the same guard through `jsstream.CreateOrUpdate(ctx, js, cfg)` and the same limits through `streambuilder.LimitsFor(role)`. KV buckets (`kv.Ensure`) do not use the builder and are not affected by the env.
 
 > **Dedup invariant:** the `Duplicates` window must be `>= 2 ×` the outbox relay
 > `StallThreshold` (default 5m). The relay re-publishes a stalled IN_FLIGHT row with
@@ -854,7 +859,8 @@ func main() {
 | Setting | Default |
 |---|---|
 | Storage | `FileStorage` |
-| MaxBytes | `256 MiB` (override: `BROKERFX_STREAM_MAX_BYTES`) |
+| MaxBytes | `256 MiB` for `RoleEvent` (override: `BROKERFX_STREAM_MAX_BYTES`); `1 GiB` for command/result/reply/DLQ roles (override: `BROKERFX_STREAM_MAX_BYTES_CRITICAL`) |
+| Discard | `DiscardOld` for `RoleEvent`; `DiscardNew` for command/result/reply/DLQ roles |
 | MaxAge | `12 hours` |
 | Retention | `WorkQueuePolicy` |
 | MaxMsgsPerSubject | `1,000` |

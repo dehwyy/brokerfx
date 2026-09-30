@@ -345,7 +345,7 @@ fx.Provide(
 | Setting | Default |
 |---|---|
 | Storage | `FileStorage` |
-| MaxBytes | `256 MiB` for `RoleEvent` (override: `BROKERFX_STREAM_MAX_BYTES`); `1 GiB` for command/result/reply/DLQ roles (override: `BROKERFX_STREAM_MAX_BYTES_CRITICAL`) |
+| MaxBytes | `256 MiB` for `RoleEvent` (override: `BROKERFX_STREAM_MAX_BYTES`); `1 GiB` for command/result/reply roles (override: `BROKERFX_STREAM_MAX_BYTES_CRITICAL`); `256 MiB` for `RoleDLQ` (override: `BROKERFX_STREAM_MAX_BYTES_DLQ`) |
 | Discard | `DiscardOld` for `RoleEvent`; `DiscardNew` for command/result/reply/DLQ roles |
 | MaxAge | `12 hours` |
 | Retention | `WorkQueuePolicy` |
@@ -354,9 +354,9 @@ fx.Provide(
 | Replicas | `1` |
 | Duplicates | `15 minutes` |
 
-**Stream role (NF-D-192).** `WithRole(streamoptsbuilder.RoleX)` selects the limit policy explicitly; there is no guessing from the stream name. `RoleEvent` (the default when `WithRole` is not called) gets `256 MiB` and `DiscardOld`. `RoleCommand`, `RoleResult`, `RoleReply` and `RoleDLQ` get `1 GiB` and `DiscardNew`: a full stream rejects the publish with an error and the outbox retries it, instead of silently dropping the oldest message. The last `WithRole` call wins. An unknown role makes `Err()` return `ErrUnknownRole`. Services that build a raw `jetstream.StreamConfig` take the same numbers from `streambuilder.LimitsFor(role)`.
+**Stream role (NF-D-192).** `WithRole(streamoptsbuilder.RoleX)` selects the limit policy explicitly; there is no guessing from the stream name. `RoleEvent` (the default when `WithRole` is not called) gets `256 MiB` and `DiscardOld`. `RoleCommand`, `RoleResult` and `RoleReply` get `1 GiB` and `DiscardNew`, `RoleDLQ` gets `256 MiB` and `DiscardNew`: a full stream rejects the publish with an error and the outbox retries it, instead of silently dropping the oldest message. The last `WithRole` call wins. An unknown role makes `Err()` return `ErrUnknownRole`. Services that build a raw `jetstream.StreamConfig` take the same numbers from `streambuilder.LimitsFor(role)`.
 
-**MaxBytes resolution.** Priority: explicit `WithMaxBytes` > env of the role's class > role default. The classes are `BROKERFX_STREAM_MAX_BYTES` (event, default `256 MiB`) and `BROKERFX_STREAM_MAX_BYTES_CRITICAL` (command/result/reply/DLQ, default `1 GiB`); both are positive integers in bytes and are read in `NewDefault()`. A malformed or non-positive value of either variable is never replaced by the default: `Err()` returns `ErrInvalidMaxBytesEnv`, `jsstream.New` returns it, and `Build()` panics. The check applies for every role and even when `WithMaxBytes` is set. An explicit `WithDiscard` wins over the role policy in either call order, as `WithMaxBytes` does.
+**MaxBytes resolution.** Priority: explicit `WithMaxBytes` > env of the role's class > role default. The classes are `BROKERFX_STREAM_MAX_BYTES` (event, default `256 MiB`), `BROKERFX_STREAM_MAX_BYTES_CRITICAL` (command/result/reply, default `1 GiB`) and `BROKERFX_STREAM_MAX_BYTES_DLQ` (DLQ, default `256 MiB`); all are positive integers in bytes and are read in `NewDefault()`. A malformed or non-positive value of any of the three variables is never replaced by the default: `Err()` returns `ErrInvalidMaxBytesEnv`, `jsstream.New` returns it, and `Build()` panics. The check applies for every role and even when `WithMaxBytes` is set. An explicit `WithDiscard` wins over the role policy in either call order, as `WithMaxBytes` does.
 
 **Reserve.** JetStream reserves `max_bytes` of every stream against the server's `max_file_store`; in a cluster each server counts one `max_bytes` per stream replica it hosts. Before raising the critical limit, sum `max_bytes` of all streams on the smallest server.
 
@@ -859,7 +859,7 @@ func main() {
 | Setting | Default |
 |---|---|
 | Storage | `FileStorage` |
-| MaxBytes | `256 MiB` for `RoleEvent` (override: `BROKERFX_STREAM_MAX_BYTES`); `1 GiB` for command/result/reply/DLQ roles (override: `BROKERFX_STREAM_MAX_BYTES_CRITICAL`) |
+| MaxBytes | `256 MiB` for `RoleEvent` (override: `BROKERFX_STREAM_MAX_BYTES`); `1 GiB` for command/result/reply roles (override: `BROKERFX_STREAM_MAX_BYTES_CRITICAL`); `256 MiB` for `RoleDLQ` (override: `BROKERFX_STREAM_MAX_BYTES_DLQ`) |
 | Discard | `DiscardOld` for `RoleEvent`; `DiscardNew` for command/result/reply/DLQ roles |
 | MaxAge | `12 hours` |
 | Retention | `WorkQueuePolicy` |

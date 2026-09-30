@@ -230,6 +230,7 @@ func publishUntilError(js jetstream.JetStream, name string, limit int) (publishe
 func TestRoleCreatesStreamWithRoleLimits(t *testing.T) {
 	t.Setenv(streamoptsbuilder.EnvMaxBytes, "")
 	t.Setenv(streamoptsbuilder.EnvCriticalMaxBytes, "")
+	t.Setenv(streamoptsbuilder.EnvDLQMaxBytes, "")
 	js := testenv.NATS(t)
 
 	newRoleStream(t, js, "RL_CMD", streamoptsbuilder.RoleCommand)
@@ -263,6 +264,7 @@ func TestCriticalStreamRejectsPublishWhenFull(t *testing.T) {
 func TestEventStreamDropsOldestWhenFull(t *testing.T) {
 	t.Setenv(streamoptsbuilder.EnvMaxBytes, "2097152")
 	t.Setenv(streamoptsbuilder.EnvCriticalMaxBytes, "")
+	t.Setenv(streamoptsbuilder.EnvDLQMaxBytes, "")
 	js := testenv.NATS(t)
 
 	newRoleStream(t, js, "RL_FULL_EVT", streamoptsbuilder.RoleEvent)
@@ -281,6 +283,7 @@ func TestEventStreamDropsOldestWhenFull(t *testing.T) {
 func TestRoleSwitchOnLiveLegacyStreamEmptyShrinks(t *testing.T) {
 	t.Setenv(streamoptsbuilder.EnvMaxBytes, "")
 	t.Setenv(streamoptsbuilder.EnvCriticalMaxBytes, "")
+	t.Setenv(streamoptsbuilder.EnvDLQMaxBytes, "")
 	js := testenv.NATS(t)
 
 	newStream(t, js, "RL_LEGACY_EMPTY", 2048*mib)
@@ -290,7 +293,7 @@ func TestRoleSwitchOnLiveLegacyStreamEmptyShrinks(t *testing.T) {
 
 	cfg := streamInfo(t, js, "RL_LEGACY_EMPTY").Config
 	require.Equal(t, jetstream.DiscardNew, cfg.Discard)
-	require.Equal(t, int64(1024*mib), cfg.MaxBytes)
+	require.Equal(t, int64(256*mib), cfg.MaxBytes)
 }
 
 func TestRoleSwitchOnLiveLegacyStreamKeepsLimitWhenDataExceedsHalf(t *testing.T) {
@@ -314,6 +317,7 @@ func TestRoleSwitchOnLiveLegacyStreamKeepsLimitWhenDataExceedsHalf(t *testing.T)
 func TestRoleSwitchEventToCriticalAndBackOnLiveStream(t *testing.T) {
 	t.Setenv(streamoptsbuilder.EnvMaxBytes, "")
 	t.Setenv(streamoptsbuilder.EnvCriticalMaxBytes, "")
+	t.Setenv(streamoptsbuilder.EnvDLQMaxBytes, "")
 	js := testenv.NATS(t)
 
 	newRoleStream(t, js, "RL_ROLLBACK", streamoptsbuilder.RoleCommand)

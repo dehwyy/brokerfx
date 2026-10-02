@@ -88,10 +88,26 @@ func New[T any](deps Deps) (*TimedActor[T], error) {
 
 	// CreateOrUpdateKeyValue is idempotent: creates the bucket if it doesn't
 	// exist, or returns the existing one with updated config.
+	storage := jetstream.MemoryStorage
+	if cfg.FileStorage {
+		storage = jetstream.FileStorage
+	}
+
+	replicas := cfg.Replicas
+	if replicas < 1 {
+		resolved, err := streamoptsbuilder.ReplicasFor(streamoptsbuilder.ScopeKV)
+		if err != nil {
+			return nil, err
+		}
+
+		replicas = resolved
+	}
+
 	kv, err := deps.JS.CreateOrUpdateKeyValue(ctx, jetstream.KeyValueConfig{
-		Bucket:  cfg.BucketName,
-		Storage: jetstream.MemoryStorage,
-		TTL:     cfg.BucketTTL,
+		Bucket:   cfg.BucketName,
+		Storage:  storage,
+		TTL:      cfg.BucketTTL,
+		Replicas: replicas,
 	})
 	if err != nil {
 		return nil, err

@@ -1281,3 +1281,48 @@ func TestHold_WithSubscribe_FullFlow(t *testing.T) {
 		// Good — no callback fired.
 	}
 }
+
+func TestNew_StorageAndReplicas(t *testing.T) {
+	tests := []struct {
+		name        string
+		cfg         Config
+		env         string
+		wantStorage jetstream.StorageType
+		wantReplica int
+		wantErr     bool
+	}{
+		{name: "default stays memory r1", cfg: Config{BucketName: "b"}, wantStorage: jetstream.MemoryStorage, wantReplica: 1},
+		{name: "file with env kv replicas", cfg: Config{BucketName: "b", FileStorage: true}, env: "3", wantStorage: jetstream.FileStorage, wantReplica: 3},
+		{name: "explicit replicas win over env", cfg: Config{BucketName: "b", FileStorage: true, Replicas: 2}, env: "3", wantStorage: jetstream.FileStorage, wantReplica: 2},
+		{name: "malformed env fails", cfg: Config{BucketName: "b", FileStorage: true}, env: "x", wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("NATS_JS_REPLICAS_KV", tt.env)
+			t.Setenv("NATS_JS_REPLICAS", "")
+			var got jetstream.KeyValueConfig
+			js := &mockJetStream{
+				createOrUpdateKVFn: func(_ context.Context, cfg jetstream.KeyValueConfig) (jetstream.KeyValue, error) {
+					got = cfg
+					return &mockKV{}, nil
+				},
+			}
+			_, err := New[testMeta](Deps{JS: js, Config: tt.cfg})
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Storage != tt.wantStorage {
+				t.Errorf("storage = %v, want %v", got.Storage, tt.wantStorage)
+			}
+			if got.Replicas != tt.wantReplica {
+				t.Errorf("replicas = %d, want %d", got.Replicas, tt.wantReplica)
+			}
+		})
+	}
+}

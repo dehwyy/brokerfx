@@ -30,6 +30,10 @@ type Config struct {
 	// This acts as a fallback to prevent infinite growth of the bucket
 	// from "orphaned" keys. Default: 48h.
 	BucketTTL time.Duration
+
+	FileStorage bool
+
+	Replicas int
 }
 
 // DefaultConfig returns a Config with sensible defaults.

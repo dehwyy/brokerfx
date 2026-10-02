@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.4.4
+
+- `timedactor.Config` gets `FileStorage` (bucket in file storage, default stays memory) and `Replicas` (0 resolves `NATS_JS_REPLICAS_KV` / `NATS_JS_REPLICAS`, malformed env fails `New`). Needed to move the `processing-timers` KV to file R3.
+
 ## v0.4.3
 
 - Outbox schema caps are no longer pinned when legacy. `OutboxRelay` and `OutboxStore` re-detect the schema (every 5 s, throttled) until `headers`, `attempts`, `last_error`, `next_attempt_at` and `outbox_retries` all exist, and cache only a complete schema. Before, a relay or store that detected the schema before `outbox.AutoMigrate` ran stayed on the legacy branch for the whole process life: rows with `Paylonium-Envelope` headers were published without them (and the store rejected header writes with `ErrSchemaOutdated`) until a restart. The relay logs a warning at start when the schema is incomplete.

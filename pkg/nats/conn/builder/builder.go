@@ -111,3 +111,33 @@ func (b *ConnBuilder) WithConnName(
 	)
 	return b
 }
+
+func (b *ConnBuilder) WithReconnectJitter(
+	jitter time.Duration,
+) *ConnBuilder {
+	b.opts = append(
+		b.opts,
+		nats.ReconnectJitter(jitter, jitter),
+	)
+	return b
+}
+
+func (b *ConnBuilder) WithDisconnectErrHandler(
+	handler func(*nats.Conn, error),
+) *ConnBuilder {
+	b.opts = append(
+		b.opts,
+		nats.DisconnectErrHandler(handler),
+	)
+	return b
+}
+
+func (b *ConnBuilder) WithClosedHandler(
+	handler func(*nats.Conn),
+) *ConnBuilder {
+	b.opts = append(
+		b.opts,
+		nats.ClosedHandler(handler),
+	)
+	return b
+}

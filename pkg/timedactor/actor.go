@@ -389,49 +389,93 @@ func (ta *TimedActor[T]) Subscribe(ctx context.Context, eventKey string, match f
 
 		ta.logger.Info().Str("event_key", eventKey).Msg("starting subscribe watcher")
 
-		// Open a KV watcher for the given key pattern.
-		// The watcher will first send all existing values, then a nil sentinel,
-		// then real-time updates.
-		watcher, err := ta.kv.Watch(ta.ctx, eventKey)
-		if err != nil {
-			ta.logger.Error().Err(err).Str("event_key", eventKey).Msg("failed to create KV watcher")
-			return
-		}
+		backoff := watchRetryMin
+		for ta.ctx.Err() == nil {
+			started := ta.runWatcher(eventKey)
+			if ta.ctx.Err() != nil {
+				return
+			}
 
-		ta.mu.Lock()
-		ta.watchers = append(ta.watchers, watcher)
-		ta.mu.Unlock()
+			if started {
+				backoff = watchRetryMin
+			}
 
-		// Safety-net ticker: periodically re-scan all tracked timers to catch
-		// any keys that might have been missed due to reconnection or race.
-		ticker := time.NewTicker(ta.config.CheckInterval)
-		defer ticker.Stop()
-
-		for {
 			select {
 			case <-ta.ctx.Done():
-				ta.logger.Info().Str("event_key", eventKey).Msg("subscribe watcher stopping")
 				return
+			case <-time.After(backoff):
+			}
 
-			case entry, ok := <-watcher.Updates():
-				if !ok {
-					ta.logger.Warn().Str("event_key", eventKey).Msg("watcher channel closed")
-					return
+			if backoff < watchRetryMax {
+				backoff *= 2
+				if backoff > watchRetryMax {
+					backoff = watchRetryMax
 				}
-
-				// nil entry is the sentinel indicating all initial values have
-				// been delivered; ignore it.
-				if entry == nil {
-					continue
-				}
-
-				ta.handleWatchEntry(entry)
-
-			case <-ticker.C:
-				ta.rescanOverdueTimers()
 			}
 		}
 	}()
+}
+
+var (
+	watchRetryMin = 500 * time.Millisecond
+	watchRetryMax = 15 * time.Second
+)
+
+// runWatcher opens one KV watcher and serves it until the context is done or
+// the watcher stops. It returns whether the watcher was opened, so the caller
+// can reopen it after a closed channel (bucket recreated, connection closed).
+func (ta *TimedActor[T]) runWatcher(eventKey string) bool {
+	// The watcher first sends all existing values, then a nil sentinel,
+	// then real-time updates.
+	watcher, err := ta.kv.Watch(ta.ctx, eventKey)
+	if err != nil {
+		ta.logger.Error().Err(err).Str("event_key", eventKey).Msg("failed to create KV watcher, will retry")
+		return false
+	}
+
+	ta.mu.Lock()
+	ta.watchers = append(ta.watchers, watcher)
+	ta.mu.Unlock()
+
+	defer func() {
+		_ = watcher.Stop()
+		ta.mu.Lock()
+		for i, w := range ta.watchers {
+			if w == watcher {
+				ta.watchers = append(ta.watchers[:i], ta.watchers[i+1:]...)
+				break
+			}
+		}
+		ta.mu.Unlock()
+	}()
+
+	// Safety-net ticker: periodically re-scan all tracked timers to catch
+	// any keys that might have been missed due to reconnection or race.
+	ticker := time.NewTicker(ta.config.CheckInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ta.ctx.Done():
+			ta.logger.Info().Str("event_key", eventKey).Msg("subscribe watcher stopping")
+			return true
+
+		case entry, ok := <-watcher.Updates():
+			if !ok {
+				ta.logger.Warn().Str("event_key", eventKey).Msg("watcher channel closed, reopening")
+				return true
+			}
+
+			if entry == nil {
+				continue
+			}
+
+			ta.handleWatchEntry(entry)
+
+		case <-ticker.C:
+			ta.rescanOverdueTimers()
+		}
+	}
 }
 
 // Stop cancels all background goroutines spawned by Subscribe and waits for

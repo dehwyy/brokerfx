@@ -40,12 +40,28 @@ func CreateOrUpdate(
 	js jetstream.JetStream,
 	cfg jetstream.StreamConfig,
 ) (jetstream.Stream, error) {
+	if cfg.Replicas < 1 {
+		replicas, err := streamoptsbuilder.ReplicasFor(streamoptsbuilder.ScopeEvent)
+		if err != nil {
+			return nil, err
+		}
+		cfg.Replicas = replicas
+	}
+
 	existing, err := js.Stream(ctx, cfg.Name)
 	switch {
 	case err == nil:
 		info, err := existing.Info(ctx)
 		if err != nil {
 			return nil, err
+		}
+
+		if info.Config.Replicas != cfg.Replicas {
+			log.Info().
+				Str("stream", cfg.Name).
+				Int("current_replicas", info.Config.Replicas).
+				Int("requested_replicas", cfg.Replicas).
+				Msg("stream replicas change requested")
 		}
 
 		maxBytes, kept := guardMaxBytes(info, cfg.MaxBytes)

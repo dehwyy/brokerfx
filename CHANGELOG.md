@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.4.3
+
+- Outbox schema caps are no longer pinned when legacy. `OutboxRelay` and `OutboxStore` re-detect the schema (every 5 s, throttled) until `headers`, `attempts`, `last_error`, `next_attempt_at` and `outbox_retries` all exist, and cache only a complete schema. Before, a relay or store that detected the schema before `outbox.AutoMigrate` ran stayed on the legacy branch for the whole process life: rows with `Paylonium-Envelope` headers were published without them (and the store rejected header writes with `ErrSchemaOutdated`) until a restart. The relay logs a warning at start when the schema is incomplete.
+- Stream and KV replicas from env (NF-D-276). `NATS_JS_REPLICAS` (1..5, default 1) is the global value, `NATS_JS_REPLICAS_<EVENT|COMMAND|RESULT|REPLY|DLQ|KV>` overrides it per role. `StreamOptsBuilder` applies the role value (`WithRole`) unless `WithReplicas` is called explicitly (explicit wins in either order). `stream.CreateOrUpdate` with `cfg.Replicas < 1` resolves the event scope. `kv.Ensure` with `Replicas == 0` resolves the KV scope; `Replicas < 0` is still `ErrReplicasRequired`, an explicit `Replicas >= 1` wins over env. Create and update of an existing stream both apply the value, so a restart on an R3 cluster does not return R1. A malformed value fails startup (`ErrInvalidReplicasEnv`, `StreamOptsBuilder.Err()`). Services must stop hard-coding `WithReplicas(1)` / `kv.Opts{Replicas: 1}` for the env to take effect.
+- Connection resilience in `pkg/nats/conn`: `MaxReconnects` 0 or negative means unlimited (-1), `ReconnectWait` defaults to 2 s with 500 ms jitter, `RetryOnFailedConnect` is always on. New `Opts.Shutdowner fx.Shutdowner` calls `Shutdown(ExitCode(1))` when the connection is closed for good (not on a deliberate `Close`/`Drain`), `Opts.OnClosed` is an extra hook. Disconnect, reconnect and close are logged.
+- `consumer.Opts.OnFatal` is called when the pull subscription ends for good (`ErrConsumerDeleted` / `ErrConsumerNotFound`); consume errors are logged. Pull consumers keep running through a server restart (covered by an embedded nats-server test).
+- `timedactor.Subscribe` reopens its KV watcher with backoff when `Watch` fails or the updates channel closes, instead of silently ending the goroutine (and its safety-net rescan).
+
 ## v0.4.1
 
 - Stream default `MaxBytes` lowered from 2 GiB to 256 MiB. 48 streams at 2 GiB reserve 96 GiB of JetStream storage against well under 1 MiB of real data.

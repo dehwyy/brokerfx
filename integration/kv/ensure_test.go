@@ -124,14 +124,14 @@ func TestEnsureMakesNoStreamChangesOnRepeatedCallWithSameOpts(t *testing.T) {
 	require.Zero(t, counting.createOrUpdateKeyValueCalls)
 }
 
-func TestEnsureRejectsZeroReplicas(t *testing.T) {
+func TestEnsureRejectsNegativeReplicas(t *testing.T) {
 	t.Parallel()
 
 	js := testenv.NATS(t)
 
 	_, err := kv.Ensure(context.Background(), js, kv.Opts{
 		Bucket:   "ENSURE3",
-		Replicas: 0,
+		Replicas: -1,
 		History:  1,
 	})
 	require.ErrorIs(t, err, kv.ErrReplicasRequired)
@@ -166,4 +166,32 @@ func TestEnsureUpdatesConfigOnRepeatedCallWithDifferentHistory(t *testing.T) {
 	require.NoError(t, err)
 	require.EqualValues(t, 5, info.Config.MaxMsgsPerSubject)
 	require.Equal(t, 15*time.Minute, info.Config.Duplicates)
+}
+
+func TestEnsureZeroReplicasResolvesFromEnv(t *testing.T) {
+	t.Setenv("NATS_JS_REPLICAS", "1")
+
+	js := testenv.NATS(t)
+
+	_, err := kv.Ensure(context.Background(), js, kv.Opts{Bucket: "ENSURE_ENV", History: 1})
+	require.NoError(t, err)
+
+	stream, err := js.Stream(context.Background(), "KV_ENSURE_ENV")
+	require.NoError(t, err)
+
+	info, err := stream.Info(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, 1, info.Config.Replicas)
+}
+
+func TestEnsureZeroReplicasFailsOnInvalidEnv(t *testing.T) {
+	t.Setenv("NATS_JS_REPLICAS_KV", "9")
+
+	js := testenv.NATS(t)
+
+	_, err := kv.Ensure(context.Background(), js, kv.Opts{Bucket: "ENSURE_BAD_ENV", History: 1})
+	require.Error(t, err)
+
+	_, err = js.Stream(context.Background(), "KV_ENSURE_BAD_ENV")
+	require.ErrorIs(t, err, jetstream.ErrStreamNotFound)
 }

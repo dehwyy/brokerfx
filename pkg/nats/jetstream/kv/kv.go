@@ -5,10 +5,11 @@ import (
 	"errors"
 	"time"
 
+	streamoptsbuilder "github.com/dehwyy/brokerfx/pkg/nats/jetstream/stream/stream-opts-builder"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
-var ErrReplicasRequired = errors.New("kv: replicas must be at least 1")
+var ErrReplicasRequired = errors.New("kv: replicas must not be negative")
 
 const kvStreamNamePrefix = "KV_"
 
@@ -24,8 +25,15 @@ type Opts struct {
 }
 
 func Ensure(ctx context.Context, js jetstream.JetStream, opts Opts) (jetstream.KeyValue, error) {
-	if opts.Replicas < 1 {
+	if opts.Replicas < 0 {
 		return nil, ErrReplicasRequired
+	}
+	if opts.Replicas == 0 {
+		replicas, err := streamoptsbuilder.ReplicasFor(streamoptsbuilder.ScopeKV)
+		if err != nil {
+			return nil, err
+		}
+		opts.Replicas = replicas
 	}
 
 	duplicates := opts.Duplicates

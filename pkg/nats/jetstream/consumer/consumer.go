@@ -2,6 +2,7 @@ package consumer
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	consumeroptsbuilder "github.com/dehwyy/brokerfx/pkg/nats/jetstream/consumer/consumer-opts-builder"
@@ -19,6 +20,22 @@ type Opts struct {
 	HandlerFunc             func(ctx context.Context, msg jetstream.Msg) error
 	BeforeHandlerMiddleware []middleware.Middleware
 	AfterHandlerMiddleware  []middleware.Middleware
+
+	// OnFatal is called when the pull subscription stops for good (the consumer was deleted),
+	// so the process can restart instead of idling without a consumer.
+	OnFatal func(error)
+}
+
+func consumeErrHandler(opts Opts) jetstream.ConsumeErrHandlerFunc {
+	return func(_ jetstream.ConsumeContext, err error) {
+		fatal := errors.Is(err, jetstream.ErrConsumerDeleted) || errors.Is(err, jetstream.ErrConsumerNotFound)
+
+		log.Warn().Err(err).Bool("fatal", fatal).Msg("jetstream consume error")
+
+		if fatal && opts.OnFatal != nil {
+			opts.OnFatal(err)
+		}
+	}
 }
 
 type Consumer struct {
@@ -54,6 +71,7 @@ func New(opts Opts) (*Consumer, error) {
 		},
 		jetstream.PullMaxMessages(50),
 		jetstream.PullHeartbeat(10*time.Second),
+		jetstream.ConsumeErrHandler(consumeErrHandler(opts)),
 	)
 
 	if err != nil {

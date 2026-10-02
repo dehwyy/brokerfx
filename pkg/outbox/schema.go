@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"sync"
+	"time"
 
 	"gorm.io/gorm"
 )
@@ -58,4 +60,42 @@ func AutoMigrate(db *gorm.DB) error {
 	}
 
 	return nil
+}
+
+const defaultCapsRecheck = 5 * time.Second
+
+type detectFunc func(context.Context, *gorm.DB) (schemaCaps, error)
+
+type capsCache struct {
+	mu          sync.Mutex
+	caps        schemaCaps
+	resolved    bool
+	lastTry     time.Time
+	haveTry     bool
+	recheckWait time.Duration
+}
+
+func (c *capsCache) get(ctx context.Context, db *gorm.DB, detect detectFunc) (schemaCaps, bool, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.resolved {
+		return c.caps, true, nil
+	}
+
+	if c.haveTry && time.Since(c.lastTry) < c.recheckWait {
+		return c.caps, false, nil
+	}
+
+	caps, err := detect(ctx, db)
+	if err != nil {
+		return schemaCaps{}, false, err
+	}
+
+	c.caps = caps
+	c.lastTry = time.Now()
+	c.haveTry = true
+	c.resolved = caps.V2 && caps.Retries
+
+	return c.caps, c.resolved, nil
 }

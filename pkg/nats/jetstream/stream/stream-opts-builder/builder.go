@@ -90,6 +90,7 @@ type StreamOptsBuilder struct {
 	dlqMaxBytes      int64
 	maxBytesExplicit bool
 	discardExplicit  bool
+	replicasExplicit bool
 }
 
 func bytesFromEnv(name string, fallback int64) (int64, error) {
@@ -166,7 +167,7 @@ func NewDefault() *StreamOptsBuilder {
 			Retention:         jetstream.WorkQueuePolicy,
 			MaxMsgsPerSubject: 1_000,
 			Compression:       jetstream.S2Compression,
-			Replicas:          1,
+			Replicas:          DefaultReplicas,
 			// Duplicates enables JetStream server-side dedup via Nats-Msg-Id: within this
 			// window the server suppresses a second publish with the same id. Must be smaller
 			// than MaxAge so old dedup records don't outlive the messages they protect, and
@@ -189,6 +190,14 @@ func (b *StreamOptsBuilder) WithRole(role Role) *StreamOptsBuilder {
 	}
 
 	b.role = role
+	if !b.replicasExplicit {
+		replicas, err := ReplicasForRole(role)
+		if err != nil {
+			b.err = errors.Join(b.err, err)
+		} else {
+			b.config.Replicas = replicas
+		}
+	}
 	if !b.maxBytesExplicit {
 		b.config.MaxBytes = limits.MaxBytes
 	}
@@ -246,6 +255,7 @@ func (b *StreamOptsBuilder) WithReplicas(
 	replicas int,
 ) *StreamOptsBuilder {
 	b.config.Replicas = replicas
+	b.replicasExplicit = true
 	return b
 }
 

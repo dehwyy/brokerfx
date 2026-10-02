@@ -7,7 +7,6 @@ import (
 	"net/textproto"
 	"os"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -82,10 +81,8 @@ type OutboxRelay struct {
 	logger   zerolog.Logger
 	config   Config
 
-	schemaCapsMu       sync.Mutex
-	schemaCaps         schemaCaps
-	schemaCapsResolved bool
-	detectSchemaFn     func(context.Context, *gorm.DB) (schemaCaps, error)
+	capsCache      capsCache
+	detectSchemaFn detectFunc
 
 	paused atomic.Bool
 
@@ -113,6 +110,7 @@ func NewRelay(deps RelayDeps) *OutboxRelay {
 		logger:         log.With().Str("component", "outbox-relay").Logger(),
 		config:         cfg,
 		detectSchemaFn: detectSchema,
+		capsCache:      capsCache{recheckWait: defaultCapsRecheck},
 		done:           make(chan struct{}),
 	}
 	r.paused.Store(cfg.Paused || envPaused())
@@ -138,7 +136,13 @@ func (r *OutboxRelay) Paused() bool {
 func (r *OutboxRelay) Run(ctx context.Context) {
 	defer close(r.done)
 
-	r.ensureSchemaCaps(ctx)
+	caps := r.ensureSchemaCaps(ctx)
+	if !caps.V2 {
+		r.logger.Warn().Msg("outbox v2 columns missing, rechecking periodically")
+	}
+	if !caps.Retries {
+		r.logger.Warn().Msg("outbox_retries missing")
+	}
 
 	ticker := time.NewTicker(r.config.TickInterval)
 	defer ticker.Stop()
@@ -227,27 +231,13 @@ func (r *OutboxRelay) Done() <-chan struct{} {
 }
 
 func (r *OutboxRelay) ensureSchemaCaps(ctx context.Context) schemaCaps {
-	r.schemaCapsMu.Lock()
-	defer r.schemaCapsMu.Unlock()
-
-	if r.schemaCapsResolved {
-		return r.schemaCaps
-	}
-
-	caps, err := r.detectSchemaFn(ctx, r.store.DB())
+	caps, _, err := r.capsCache.get(ctx, r.store.DB(), r.detectSchemaFn)
 	if err != nil {
 		r.logger.Error().Err(err).Msg("failed to detect outbox schema, retrying on next batch")
 		return schemaCaps{}
 	}
 
-	r.schemaCaps = caps
-	r.schemaCapsResolved = true
-
-	if !caps.Retries {
-		r.logger.Warn().Msg("outbox_retries missing")
-	}
-
-	return r.schemaCaps
+	return caps
 }
 
 func (r *OutboxRelay) lockRowsLegacy(query *gorm.DB) ([]relayEvent, error) {

@@ -98,7 +98,7 @@ func TestEnsureSchemaCapsRetriesDetectionAfterError(t *testing.T) {
 	if first.V2 {
 		t.Fatalf("on detection error, ensureSchemaCaps must not report V2 support, got %+v", first)
 	}
-	if r.schemaCapsResolved {
+	if r.capsCache.resolved {
 		t.Fatalf("a failed detection must not be treated as resolved, otherwise legacy caps stick forever")
 	}
 

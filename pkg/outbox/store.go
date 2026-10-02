@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"reflect"
-	"sync"
 	"time"
 
 	cryptov1 "github.com/dehwyy/brokerfx/pkg/crypto/v1"
@@ -24,9 +23,7 @@ type OutboxStore struct {
 	wakeupChan chan struct{}
 	txmanager  txmanager.TxManager
 
-	schemaCapsMu       sync.Mutex
-	schemaCaps         schemaCaps
-	schemaCapsResolved bool
+	capsCache capsCache
 }
 
 // NewStore creates a new OutboxStore.
@@ -36,6 +33,7 @@ func NewStore(deps StoreDeps) *OutboxStore {
 		db:         deps.DB,
 		wakeupChan: make(chan struct{}, 1),
 		txmanager:  deps.TxManager,
+		capsCache:  capsCache{recheckWait: defaultCapsRecheck},
 	}
 }
 
@@ -127,22 +125,9 @@ func (s *OutboxStore) SaveMessage(ctx context.Context, msg Message, opts ...Mess
 }
 
 func (s *OutboxStore) ensureSchemaCaps(ctx context.Context) (schemaCaps, error) {
-	s.schemaCapsMu.Lock()
-	defer s.schemaCapsMu.Unlock()
+	caps, _, err := s.capsCache.get(ctx, s.db, detectSchema)
 
-	if s.schemaCapsResolved {
-		return s.schemaCaps, nil
-	}
-
-	caps, err := detectSchema(ctx, s.db)
-	if err != nil {
-		return schemaCaps{}, err
-	}
-
-	s.schemaCaps = caps
-	s.schemaCapsResolved = true
-
-	return s.schemaCaps, nil
+	return caps, err
 }
 
 // WakeupRelay sends a non-blocking signal to the relay worker, triggering

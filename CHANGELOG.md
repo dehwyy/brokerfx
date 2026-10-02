@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.4.4
+## v0.4.5
 
 - `timedactor.Config` gets `FileStorage` (bucket in file storage, default stays memory) and `Replicas` (0 resolves `NATS_JS_REPLICAS_KV` / `NATS_JS_REPLICAS`, malformed env fails `New`). Needed to move the `processing-timers` KV to file R3.
 

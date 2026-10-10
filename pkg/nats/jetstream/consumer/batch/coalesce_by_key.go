@@ -33,12 +33,12 @@ func CoalesceByKey(
 		)
 
 		for position, members := range indexes {
-			result := Nak(ErrMissingResult)
+			groupResult := Nak(ErrMissingResult)
 			if position < len(groupResults) {
-				result = groupResults[position]
+				groupResult = groupResults[position]
 			}
 			for _, index := range members {
-				results[index] = result
+				results[index] = groupResult
 			}
 		}
 

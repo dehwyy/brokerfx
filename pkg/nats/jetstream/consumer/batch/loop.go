@@ -46,7 +46,10 @@ func (c *Consumer) loop(ctx context.Context) {
 		if err != nil {
 			log.Warn().
 				Err(err).
-				Int("fetched", len(msgs)).
+				Int(
+					"fetched",
+					len(msgs),
+				).
 				Msg("batch fetch failed")
 			if len(msgs) == 0 {
 				pause(

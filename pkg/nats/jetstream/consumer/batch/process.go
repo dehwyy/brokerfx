@@ -40,8 +40,14 @@ func (c *Consumer) runHandler(
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			log.Error().
-				Any("panic", recovered).
-				Int("batch", len(msgs)).
+				Any(
+					"panic",
+					recovered,
+				).
+				Int(
+					"batch",
+					len(msgs),
+				).
 				Msg("batch handler panic, isolating messages")
 			results = nil
 			completed = false

@@ -50,7 +50,10 @@ func progressUnsettled(msgs []jetstream.Msg) {
 
 		log.Warn().
 			Err(err).
-			Str("subject", msg.Subject()).
+			Str(
+				"subject",
+				msg.Subject(),
+			).
 			Msg("batch in-progress heartbeat failed")
 	}
 }

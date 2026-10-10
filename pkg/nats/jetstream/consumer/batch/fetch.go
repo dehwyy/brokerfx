@@ -93,13 +93,29 @@ func (c *Consumer) collect(
 }
 
 func isQuietFetchErr(err error) bool {
-	return errors.Is(err, nats.ErrTimeout) ||
-		errors.Is(err, jetstream.ErrNoMessages) ||
-		errors.Is(err, context.Canceled) ||
-		errors.Is(err, context.DeadlineExceeded)
+	for _, quiet := range []error{
+		nats.ErrTimeout,
+		jetstream.ErrNoMessages,
+		context.Canceled,
+		context.DeadlineExceeded,
+	} {
+		if errors.Is(
+			err,
+			quiet,
+		) {
+			return true
+		}
+	}
+
+	return false
 }
 
 func isFatalFetchErr(err error) bool {
-	return errors.Is(err, jetstream.ErrConsumerDeleted) ||
-		errors.Is(err, jetstream.ErrConsumerNotFound)
+	return errors.Is(
+		err,
+		jetstream.ErrConsumerDeleted,
+	) || errors.Is(
+		err,
+		jetstream.ErrConsumerNotFound,
+	)
 }

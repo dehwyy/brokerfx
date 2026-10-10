@@ -118,7 +118,10 @@ func (h *inTx) fresh(
 		0,
 		len(subset),
 	)
-	seen := make(map[string]struct{}, len(subset))
+	seen := make(
+		map[string]struct{},
+		len(subset),
+	)
 	for _, index := range subset {
 		key := h.key(msgs[index])
 		if _, duplicate := seen[key]; duplicate {

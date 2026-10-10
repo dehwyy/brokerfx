@@ -31,7 +31,10 @@ var claimKeys = func(
 	conn *gorm.DB,
 	rows []consumer.ProcessedMessage,
 ) (map[string]struct{}, error) {
-	claimed := make(map[string]struct{}, len(rows))
+	claimed := make(
+		map[string]struct{},
+		len(rows),
+	)
 	if len(rows) == 0 {
 		return claimed, nil
 	}

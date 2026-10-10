@@ -15,15 +15,15 @@ func (c *Consumer) settle(
 	results []Result,
 ) {
 	for i, msg := range msgs {
-		result := Nak(ErrMissingResult)
+		messageResult := Nak(ErrMissingResult)
 		if i < len(results) {
-			result = results[i]
+			messageResult = results[i]
 		}
 
 		c.apply(
 			ctx,
 			msg,
-			result,
+			messageResult,
 		)
 	}
 }
@@ -93,9 +93,18 @@ func (c *Consumer) retry(
 
 	log.Warn().
 		Err(result.Err).
-		Str("subject", msg.Subject()).
-		Uint64("num_delivered", delivered).
-		Dur("delay", delay).
+		Str(
+			"subject",
+			msg.Subject(),
+		).
+		Uint64(
+			"num_delivered",
+			delivered,
+		).
+		Dur(
+			"delay",
+			delay,
+		).
 		Msg("batch message nak with delay")
 
 	logSettleErr(
@@ -110,7 +119,10 @@ func numDelivered(msg jetstream.Msg) uint64 {
 	if err != nil || metadata == nil {
 		log.Warn().
 			Err(err).
-			Str("subject", msg.Subject()).
+			Str(
+				"subject",
+				msg.Subject(),
+			).
 			Msg("batch message metadata unavailable, treating as first delivery")
 		return 1
 	}
@@ -132,16 +144,28 @@ func logSettleErr(
 		jetstream.ErrMsgAlreadyAckd,
 	) {
 		log.Debug().
-			Str("subject", msg.Subject()).
-			Str("action", action).
+			Str(
+				"subject",
+				msg.Subject(),
+			).
+			Str(
+				"action",
+				action,
+			).
 			Msg("batch message already settled by handler")
 		return
 	}
 
 	log.Error().
 		Err(err).
-		Str("subject", msg.Subject()).
-		Str("action", action).
+		Str(
+			"subject",
+			msg.Subject(),
+		).
+		Str(
+			"action",
+			action,
+		).
 		Msg("batch message settle failed")
 }
 

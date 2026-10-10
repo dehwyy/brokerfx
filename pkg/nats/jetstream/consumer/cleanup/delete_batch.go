@@ -15,11 +15,11 @@ var deleteBatch = func(
 	before time.Time,
 	limit int,
 ) (int64, error) {
-	result := db.WithContext(ctx).Exec(
+	deletion := db.WithContext(ctx).Exec(
 		deleteBatchQuery,
 		before,
 		limit,
 	)
 
-	return result.RowsAffected, result.Error
+	return deletion.RowsAffected, deletion.Error
 }

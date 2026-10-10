@@ -57,7 +57,10 @@ func (r *OutboxRelay) processBatched(
 		if outcome.err != nil {
 			r.logger.Error().
 				Err(outcome.err).
-				Str("event_id", outcome.id).
+				Str(
+					"event_id",
+					outcome.id,
+				).
 				Msg("failed to publish outbox event")
 			failedOutcomes = append(
 				failedOutcomes,

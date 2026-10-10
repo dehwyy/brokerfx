@@ -25,9 +25,18 @@ func (c *Cleaner) Start(_ context.Context) error {
 	)
 
 	log.Info().
-		Dur("retention", c.retention).
-		Dur("interval", c.interval).
-		Int("batch_limit", c.batchLimit).
+		Dur(
+			"retention",
+			c.retention,
+		).
+		Dur(
+			"interval",
+			c.interval,
+		).
+		Int(
+			"batch_limit",
+			c.batchLimit,
+		).
 		Msg("processed_messages cleanup started")
 
 	return nil
@@ -60,7 +69,10 @@ func (c *Cleaner) pass(ctx context.Context) {
 		}
 		log.Warn().
 			Err(err).
-			Int64("deleted", deleted).
+			Int64(
+				"deleted",
+				deleted,
+			).
 			Msg("processed_messages cleanup pass failed")
 		if c.onError != nil {
 			c.onError(err)
@@ -70,7 +82,10 @@ func (c *Cleaner) pass(ctx context.Context) {
 
 	if deleted > 0 {
 		log.Info().
-			Int64("deleted", deleted).
+			Int64(
+				"deleted",
+				deleted,
+			).
 			Msg("processed_messages cleanup pass done")
 	}
 }

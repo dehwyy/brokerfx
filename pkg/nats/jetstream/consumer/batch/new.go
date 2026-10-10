@@ -63,14 +63,38 @@ func New(opts Opts) (*Consumer, error) {
 	c.start()
 
 	log.Info().
-		Str("stream", opts.Stream.Name()).
-		Str("consumer", consumerName(actual)).
-		Int("max", s.max).
-		Dur("linger", s.linger).
-		Int("pipeline", s.pipeline).
-		Int("max_attempts", s.maxAttempts).
-		Int("max_ack_pending", actual.MaxAckPending).
-		Int("max_deliver", actual.MaxDeliver).
+		Str(
+			"stream",
+			opts.Stream.Name(),
+		).
+		Str(
+			"consumer",
+			consumerName(actual),
+		).
+		Int(
+			"max",
+			s.max,
+		).
+		Dur(
+			"linger",
+			s.linger,
+		).
+		Int(
+			"pipeline",
+			s.pipeline,
+		).
+		Int(
+			"max_attempts",
+			s.maxAttempts,
+		).
+		Int(
+			"max_ack_pending",
+			actual.MaxAckPending,
+		).
+		Int(
+			"max_deliver",
+			actual.MaxDeliver,
+		).
 		Msg("batch consumer started")
 
 	return c, nil
@@ -151,8 +175,14 @@ func updateKeepingStart(
 	if err != nil {
 		log.Warn().
 			Err(err).
-			Str("stream", stream).
-			Str("consumer", consumerName(cfg)).
+			Str(
+				"stream",
+				stream,
+			).
+			Str(
+				"consumer",
+				consumerName(cfg),
+			).
 			Msg("batch consumer config update rejected, using existing durable as is")
 		return existing
 	}

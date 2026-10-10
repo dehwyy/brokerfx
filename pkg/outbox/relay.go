@@ -94,8 +94,13 @@ type OutboxRelay struct {
 func NewRelay(deps RelayDeps) *OutboxRelay {
 	cfg := deps.Config
 	if cfg.Mode == "" {
+		batched := cfg.Batched
+		linger := cfg.Linger
 		cfg = DefaultConfig()
+		cfg.Batched = batched
+		cfg.Linger = linger
 	}
+	cfg = resolveBatched(cfg)
 	// Guard the stall invariant: a zero threshold would re-pick every IN_FLIGHT row
 	// on each tick. Fall back to the default so callers that set only Mode are safe.
 	if cfg.StallThreshold <= 0 {
@@ -174,19 +179,22 @@ func (r *OutboxRelay) Run(ctx context.Context) {
 		Int("batch_size", r.config.BatchSize).
 		Dur("tick_interval", r.config.TickInterval).
 		Str("mode", string(r.config.Mode)).
+		Bool("batched", r.config.Batched).
+		Dur("linger", r.config.Linger).
 		Msg("outbox relay started")
 
 	for {
 		select {
 		case <-ctx.Done():
 			r.logger.Info().Msg("outbox relay stopping, processing final batch")
-			r.processBatch(ctx)
+			r.process(ctx)
 			r.logger.Info().Msg("outbox relay stopped")
 			return
 		case <-r.store.WakeupChan():
-			r.processBatch(ctx)
+			r.lingerAfterWakeup(ctx)
+			r.process(ctx)
 		case <-ticker.C:
-			r.processBatch(ctx)
+			r.process(ctx)
 		case <-cleanupChan:
 			r.cleanupDone()
 		case <-statsChan:
@@ -264,6 +272,10 @@ func (r *OutboxRelay) lockRowsV2(query *gorm.DB) ([]relayEvent, error) {
 		return nil, err
 	}
 
+	return r.decodeRows(rows), nil
+}
+
+func (r *OutboxRelay) decodeRows(rows []outboxEventRow) []relayEvent {
 	events := make([]relayEvent, len(rows))
 	for i, row := range rows {
 		event := relayEvent{
@@ -285,7 +297,7 @@ func (r *OutboxRelay) lockRowsV2(query *gorm.DB) ([]relayEvent, error) {
 		events[i] = event
 	}
 
-	return events, nil
+	return events
 }
 
 func (r *OutboxRelay) revertFailedV2(db *gorm.DB, events []relayEvent, failedOutcomes []pubResult) {
@@ -433,12 +445,7 @@ func (r *OutboxRelay) processBatch(ctx context.Context) {
 
 	r.logger.Debug().Int("count", len(events)).Msg("processing outbox batch")
 
-	kvLatestIndex := make(map[string]int)
-	for i, ev := range events {
-		if strings.HasPrefix(ev.Topic, kvSubjectPrefix) {
-			kvLatestIndex[ev.Topic] = i
-		}
-	}
+	kvLatestIndex := kvLatestIndexes(events)
 
 	results := make(chan pubResult, len(events))
 
@@ -452,27 +459,13 @@ func (r *OutboxRelay) processBatch(ctx context.Context) {
 		}
 
 		go func() {
-			headers := make(map[string]string, len(event.Headers)+1)
-			for k, v := range event.Headers {
-				if textproto.CanonicalMIMEHeaderKey(k) == jetstream.MsgIDHeader {
-					continue
-				}
-				headers[k] = v
-			}
-			headers[jetstream.MsgIDHeader] = event.ID
-
-			if err := applySignature(r.signer, event.Topic, headers, event.Payload); err != nil {
+			producerEvent, err := r.producerEvent(event)
+			if err != nil {
 				results <- pubResult{
 					id:  event.ID,
 					err: err,
 				}
 				return
-			}
-
-			producerEvent := ProducerEvent{
-				Subject: event.Topic,
-				Headers: headers,
-				Payload: event.Payload,
 			}
 
 			pubErr := r.producer.Produce(ctx, producerEvent)
@@ -499,6 +492,49 @@ func (r *OutboxRelay) processBatch(ctx context.Context) {
 		}
 	}
 
+	r.settleOutcomes(ctx, db, caps, events, successIDs, failedOutcomes)
+}
+
+func kvLatestIndexes(events []relayEvent) map[string]int {
+	kvLatestIndex := make(map[string]int)
+	for i, ev := range events {
+		if strings.HasPrefix(ev.Topic, kvSubjectPrefix) {
+			kvLatestIndex[ev.Topic] = i
+		}
+	}
+
+	return kvLatestIndex
+}
+
+func (r *OutboxRelay) producerEvent(event relayEvent) (ProducerEvent, error) {
+	headers := make(map[string]string, len(event.Headers)+1)
+	for k, v := range event.Headers {
+		if textproto.CanonicalMIMEHeaderKey(k) == jetstream.MsgIDHeader {
+			continue
+		}
+		headers[k] = v
+	}
+	headers[jetstream.MsgIDHeader] = event.ID
+
+	if err := applySignature(r.signer, event.Topic, headers, event.Payload); err != nil {
+		return ProducerEvent{}, err
+	}
+
+	return ProducerEvent{
+		Subject: event.Topic,
+		Headers: headers,
+		Payload: event.Payload,
+	}, nil
+}
+
+func (r *OutboxRelay) settleOutcomes(
+	ctx context.Context,
+	db *gorm.DB,
+	caps schemaCaps,
+	events []relayEvent,
+	successIDs []string,
+	failedOutcomes []pubResult,
+) {
 	if len(failedOutcomes) > 0 {
 		failedIDs := make([]string, len(failedOutcomes))
 		retries := make([]OutboxRetry, len(failedOutcomes))

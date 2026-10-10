@@ -172,3 +172,43 @@ func (p *FakeProducer) CallCount() int {
 	defer p.mu.Unlock()
 	return len(p.Calls)
 }
+
+type FakeBatchProducer struct {
+	mu      sync.Mutex
+	Fail    func(outbox.ProducerEvent) error
+	Calls   []outbox.ProducerEvent
+	Batches []int
+}
+
+func (p *FakeBatchProducer) Produce(ctx context.Context, event outbox.ProducerEvent) error {
+	return p.ProduceBatch(ctx, []outbox.ProducerEvent{event})[0]
+}
+
+func (p *FakeBatchProducer) ProduceBatch(_ context.Context, events []outbox.ProducerEvent) []error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	p.Calls = append(p.Calls, events...)
+	p.Batches = append(p.Batches, len(events))
+
+	errs := make([]error, len(events))
+	for i, event := range events {
+		if p.Fail != nil {
+			errs[i] = p.Fail(event)
+		}
+	}
+
+	return errs
+}
+
+func (p *FakeBatchProducer) CallCount() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return len(p.Calls)
+}
+
+func (p *FakeBatchProducer) BatchSizes() []int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]int(nil), p.Batches...)
+}

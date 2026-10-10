@@ -27,15 +27,7 @@ func NewJetStreamProducer(js jetstream.JetStream) *JetStreamProducer {
 var _ Producer = (*JetStreamProducer)(nil)
 
 func (p *JetStreamProducer) Produce(_ context.Context, event ProducerEvent) error {
-	msg := &nats.Msg{
-		Subject: event.Subject,
-		Data:    event.Payload,
-		Header:  nats.Header{},
-	}
-
-	for k, v := range event.Headers {
-		msg.Header.Set(k, v)
-	}
+	msg := toNatsMsg(event)
 
 	future, err := p.js.PublishMsgAsync(msg)
 	if err != nil {
@@ -50,4 +42,18 @@ func (p *JetStreamProducer) Produce(_ context.Context, event ProducerEvent) erro
 	case <-time.After(p.timeout):
 		return context.DeadlineExceeded
 	}
+}
+
+func toNatsMsg(event ProducerEvent) *nats.Msg {
+	msg := &nats.Msg{
+		Subject: event.Subject,
+		Data:    event.Payload,
+		Header:  nats.Header{},
+	}
+
+	for k, v := range event.Headers {
+		msg.Header.Set(k, v)
+	}
+
+	return msg
 }

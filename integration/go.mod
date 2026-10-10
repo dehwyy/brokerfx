@@ -6,7 +6,9 @@ require (
 	github.com/dehwyy/brokerfx v0.0.0-00010101000000-000000000000
 	github.com/dehwyy/txmanagerfx v0.0.3
 	github.com/google/uuid v1.6.0
+	github.com/nats-io/nats-server/v2 v2.14.0
 	github.com/nats-io/nats.go v1.51.0
+	github.com/nats-io/nkeys v0.4.15
 	github.com/rs/zerolog v1.34.0
 	github.com/stretchr/testify v1.11.1
 	github.com/testcontainers/testcontainers-go/modules/nats v0.44.0
@@ -60,8 +62,6 @@ require (
 	github.com/moby/sys/userns v0.1.0 // indirect
 	github.com/moby/term v0.5.2 // indirect
 	github.com/nats-io/jwt/v2 v2.8.1 // indirect
-	github.com/nats-io/nats-server/v2 v2.14.0 // indirect
-	github.com/nats-io/nkeys v0.4.15 // indirect
 	github.com/nats-io/nuid v1.0.1 // indirect
 	github.com/opencontainers/go-digest v1.0.0 // indirect
 	github.com/opencontainers/image-spec v1.1.1 // indirect

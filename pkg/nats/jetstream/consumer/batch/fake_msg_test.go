@@ -9,7 +9,14 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
 )
+
+func TestMain(m *testing.M) {
+	log.Logger = zerolog.Nop()
+	m.Run()
+}
 
 type fakeMsg struct {
 	jetstream.Msg

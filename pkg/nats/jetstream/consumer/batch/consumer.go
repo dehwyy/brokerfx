@@ -21,5 +21,5 @@ type Consumer struct {
 	cancel         context.CancelFunc
 	loops          sync.WaitGroup
 	stopped        chan struct{}
-	drainOnce      sync.Once
+	fatalOnce      sync.Once
 }

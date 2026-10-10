@@ -12,6 +12,7 @@ import (
 	"github.com/dehwyy/brokerfx/integration/testenv"
 	"github.com/dehwyy/brokerfx/pkg/outbox"
 	"github.com/google/uuid"
+	natsgo "github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
 )
@@ -175,4 +176,33 @@ func TestBatchedRelayLegacySchemaFallsBack(t *testing.T) {
 	}, 10*time.Second, 50*time.Millisecond)
 	require.Equal(t, 1, producer.CallCount())
 	require.Equal(t, []int{1}, producer.BatchSizes())
+}
+
+func TestBatchedRelayTransportFailureDoesNotSpin(t *testing.T) {
+	t.Parallel()
+
+	db := testenv.Postgres(t)
+	require.NoError(t, outbox.AutoMigrate(db))
+	for i := 0; i < 2; i++ {
+		insertEvent(t, db, &outbox.OutboxEvent{ID: uuid.NewString(), Topic: "batched.down", Payload: []byte("p")})
+	}
+
+	producer := &testenv.FakeBatchProducer{
+		Fail: func(outbox.ProducerEvent) error {
+			return natsgo.ErrNoServers
+		},
+	}
+	cfg := batchedConfig(outbox.ModeDeleteAfterSend)
+	cfg.BatchSize = 2
+	harness := testenv.NewRelayHarness(t, db, producer, cfg)
+	harness.Start(t)
+	harness.Wake()
+
+	require.Eventually(t, func() bool {
+		return len(producer.BatchSizes()) >= 1
+	}, 10*time.Second, 20*time.Millisecond)
+	time.Sleep(500 * time.Millisecond)
+
+	require.Len(t, producer.BatchSizes(), 1)
+	require.EqualValues(t, 2, countRows(t, db, "select count(*) from outbox_events where state = ?", outbox.StatePending))
 }

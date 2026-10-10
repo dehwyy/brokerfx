@@ -19,11 +19,11 @@ func (r *OutboxRelay) process(ctx context.Context) {
 	}
 
 	for {
-		claimed := r.processBatched(
+		more := r.processBatched(
 			work,
 			caps,
 		)
-		if claimed < r.config.BatchSize || ctx.Err() != nil || r.Paused() {
+		if !more || ctx.Err() != nil || r.Paused() {
 			return
 		}
 	}
@@ -32,18 +32,18 @@ func (r *OutboxRelay) process(ctx context.Context) {
 func (r *OutboxRelay) processBatched(
 	ctx context.Context,
 	caps schemaCaps,
-) int {
+) bool {
 	if r.Paused() {
-		return 0
+		return false
 	}
 
 	events, err := r.claimBatch(ctx)
 	if err != nil {
 		r.logger.Error().Err(err).Msg("failed to claim outbox batch")
-		return 0
+		return false
 	}
 	if len(events) == 0 {
-		return 0
+		return false
 	}
 
 	outcomes := r.publishBatched(
@@ -83,7 +83,7 @@ func (r *OutboxRelay) processBatched(
 		failedOutcomes,
 	)
 
-	return len(events)
+	return len(events) >= r.config.BatchSize && len(failedOutcomes) == 0
 }
 
 func (r *OutboxRelay) publishBatched(

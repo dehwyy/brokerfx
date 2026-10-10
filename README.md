@@ -5,7 +5,8 @@ NATS JetStream abstraction library for Go with Uber fx integration. Provides typ
 ## Key Features
 
 - **Typed consumers & producers** — generic message handling with automatic msgpack encoding
-- **Outbox pattern** — transactional guaranteed delivery to NATS (write to DB + publish in one tx)
+- **Outbox pattern** — transactional guaranteed delivery to NATS (write to DB + publish in one tx), with an opt-in batched relay
+- **Batch consumer** — per-message verdicts over a fetched batch, one transaction per batch (`InTx`), retry ladder and DLQ hook
 - **TimedActor** — distributed timer scheduler backed by NATS KV with exactly-once callback execution across N replicas
 - **Distributed Hold** — suppress timeouts during long transactions without losing them
 - **Middleware chain** — composable before/after handler middleware (decode, trace, etc.)
@@ -23,6 +24,8 @@ NATS JetStream abstraction library for Go with Uber fx integration. Provides typ
   - [pkg/nats/jetstream](#pkgnatsjetstream)
     - [Producer](#producer)
     - [Consumer](#consumer)
+    - [Batch consumer](#batch-consumer)
+    - [Processed messages cleanup](#processed-messages-cleanup)
     - [Stream](#stream)
   - [pkg/outbox](#pkgoutbox)
   - [pkg/replay](#pkgreplay)
@@ -85,6 +88,8 @@ brokerfx/
     │       ├── stream/                    # Stream create-or-update wrapper
     │       │   └── stream-opts-builder/   # Fluent stream config builder
     │       └── consumer/                  # Typed consumer with middleware
+    │           ├── batch/                 # Batch pull consumer, InTx, CoalesceByKey
+    │           ├── cleanup/               # Background retention of processed_messages
     │           ├── consumer-opts-builder/ # Fluent consumer config builder
     │           └── middleware/            # Before/after handler middleware
     ├── outbox/                            # Transactional Outbox pattern
@@ -312,6 +317,141 @@ handler := jscons.WithIdempotency(
 
 `processed_messages` columns: `message_id` (PK), `subject`, `processed_at`.
 
+#### Batch consumer
+
+`pkg/nats/jetstream/consumer/batch` is a pull consumer that hands the handler a batch of messages instead of one at a time. It exists for consumers where one transaction per message is the bottleneck (projections, ledgers, mirrors). The single-message `consumer.New` is unchanged.
+
+The core owns the fetch loop, verdicts, retries, poison handling, heartbeats and drain. The handler owns the transaction and decides, per message, what happened.
+
+```go
+import (
+    "github.com/dehwyy/brokerfx/pkg/nats/jetstream/consumer/batch"
+    consumeroptsbuilder "github.com/dehwyy/brokerfx/pkg/nats/jetstream/consumer/consumer-opts-builder"
+)
+
+func RunProjection(lc fx.Lifecycle, js jetstream.JetStream, st *stream.Stream, tx txmanager.TxManager, dlq *DLQ, shutdowner fx.Shutdowner) {
+    var consumer *batch.Consumer
+    lc.Append(fx.Hook{
+        OnStart: func(ctx context.Context) error {
+            start, err := batch.ResumeSequence(ctx, js, st.Name(), "orders-projection")
+            if err != nil {
+                return err
+            }
+            handler, err := batch.InTx(batch.InTxOpts{
+                TxManager: tx,
+                Apply:     applyOrders,
+            })
+            if err != nil {
+                return err
+            }
+            consumer, err = batch.New(batch.Opts{
+                JetStream: js,
+                Stream:    st,
+                ConsumerOptsBuilder: consumeroptsbuilder.NewDefault().
+                    WithName("orders-projection-batch", true).
+                    WithFilterSubject("orders.>").
+                    WithDeliverByStartSequence(start),
+                Handler:  handler,
+                OnPoison: dlq.Write,
+                OnFatal: func(err error) {
+                    if shutdownErr := shutdowner.Shutdown(fx.ExitCode(1)); shutdownErr != nil {
+                        log.Error().Err(shutdownErr).Msg("shutdown after consumer loss failed")
+                    }
+                },
+            })
+            return err
+        },
+        OnStop: func(ctx context.Context) error {
+            return consumer.Drain(ctx)
+        },
+    })
+}
+```
+
+**Handler contract.** `type Handler func(ctx context.Context, msgs []jetstream.Msg) []batch.Result`.
+
+- `results[i]` belongs to `msgs[i]`. A shorter slice means the rest get `Nak(ErrMissingResult)`; extra results are ignored. The zero `Result{}` is a Nak.
+- Verdicts: `batch.Ack()`, `batch.Nak(err)`, `batch.NakDelay(d, err)`, `batch.Term(err)`.
+- Verdicts are applied only after the handler returns, in message order. A handler that settled a message itself (`ErrMsgAlreadyAckd` afterwards) is fine.
+- The handler context is `context.WithoutCancel` of the loop context: `Drain` never interrupts a batch that has started.
+- A panicking handler does not lose the batch: every unsettled message is run through the handler again on its own (`[]Msg{m}`) under `recover`; a message that panics again gets `Nak(ErrHandlerPanic)` and follows the retry policy below.
+- One heartbeat goroutine per batch sends `InProgress` to every unsettled message every `AckWait/2` (15 s if `AckWait` is 0), so a batch may take longer than `AckWait` without redelivery.
+- Order by key is guaranteed only inside a batch, and between batches only with `Pipeline = 1`. With `Pipeline > 1` or retries, use a version guard in the UPSERT.
+
+**Retry policy** (same as the `deadletter` packages in services):
+
+- `Nak(err)`: `NakWithDelay(Delays[min(NumDelivered, len(Delays)) - 1])`. `Opts.Delays` defaults to `batch.DefaultDelays` = 1s, 5s, 30s, 2m, 5m; every element must be > 0.
+- `NakDelay(d, err)`: `NakWithDelay(d)`.
+- The library counts attempts: once `NumDelivered >= Opts.MaxAttempts`, a Nak becomes poison. `MaxAttempts` 0 means `len(Delays) + 1` (6 with the default ladder, about 8.5 minutes in total); `-1` means retry forever.
+- An error marked with `batch.Poison(err)` (checked with `errors.Is(err, batch.ErrPoison)`) skips the ladder and goes to poison on the first delivery.
+- `Term(err)` and poison call `Opts.OnPoison(ctx, msg, err)` (write the message to the service DLQ stream there) and then `Term`. If `OnPoison` returns an error or panics, the message gets `NakWithDelay(Delays[0])` instead of `Term`, so it is not lost: it comes back, is past `MaxAttempts` and goes to `OnPoison` again. Without `OnPoison` the message is terminated with an error log.
+- Because of that, the server `MaxDeliver` must be `-1` (default, unlimited) or greater than `MaxAttempts`; otherwise `New` returns `ErrMaxDeliver`. The last server delivery must never be the last chance to write the DLQ.
+- Draining (`nakAll` of fetched but not started messages) uses a plain `Nak` without delay.
+
+**Fetch loop.** When idle, the loop waits for one message (`Fetch(1)`, up to 5 s, cancelled by `Drain`), then collects up to `Max - 1` more for `Linger`. Under load (the previous fetch was full) it fetches `Max` with `Linger` directly. `Pipeline` loops run in parallel over the same durable. Fetch timeouts are not errors. `ErrConsumerDeleted` / `ErrConsumerNotFound` naks what was fetched, calls `OnFatal` once and stops the loop. Any other fetch error is logged and retried after 1 s, so a NATS server restart does not stop the consumer.
+
+**Options and env.** An explicit `Opts` field wins over env; env wins over the default.
+
+| Field | Env | Default | Range |
+|---|---|---|---|
+| `Max` | `BROKERFX_BATCH_MAX` | `16` | 1..256 |
+| `Linger` | `BROKERFX_BATCH_LINGER` | `5ms` | (0, 1s] |
+| `Pipeline` | `BROKERFX_BATCH_PIPELINE` | `1` | 1..8 |
+| `Delays` | — | `DefaultDelays` | each > 0 |
+| `MaxAttempts` | — | `len(Delays)+1` | -1 or >= 1 |
+
+A malformed env value returns `ErrInvalidEnv`, an out-of-range value `ErrInvalidOpts`. `Handler`, `JetStream`, `Stream` and `ConsumerOptsBuilder` are required.
+
+**Consumer config checks** (done against the config the server actually holds):
+
+- `AckPolicy` must be explicit (`ErrInvalidOpts`).
+- `MaxAckPending`: when the builder leaves it at 0, `New` sets `Pipeline * Max` (`WithMaxAckPending`). An explicit value below `Pipeline * Max` returns `ErrMaxAckPending`; `-1` is allowed.
+- `MaxDeliver`: see the retry policy above (`ErrMaxDeliver`).
+
+**Existing durable.** If the durable already exists, `New` keeps it: it updates the mutable fields from the builder (AckWait, MaxAckPending, MaxDeliver and so on) but keeps the deliver policy and start sequence of the existing consumer, so a restart never moves the start position. If the server rejects the update, the existing durable is used as is.
+
+**Moving a consumer to a new batch durable.** Start the new `*-batch` durable right after the old one: `start, err := batch.ResumeSequence(ctx, js, stream, oldDurable)` returns the old durable's ack floor stream sequence + 1, or 0 when the old durable does not exist. `WithDeliverByStartSequence(start)` turns 0 into `DeliverAll` and anything else into `DeliverByStartSequence`. Events between the ack floor and what the old durable had already applied are applied again, so the handler must be idempotent (version guard or `InTx` dedup).
+
+**Drain.** `Drain(ctx)` stops fetching, naks fetched messages that have not started, waits for batches in progress and returns `nil`, or `ctx.Err()` if they do not finish in time. A second `Drain` is safe. `consumer.Drainer` does not accept a batch consumer; call `Drain` from `OnStop`.
+
+**`InTx`** is a ready handler for "apply a batch in one transaction":
+
+```go
+handler, err := batch.InTx(batch.InTxOpts{
+    TxManager: txManager,
+    Apply: func(ctx context.Context, msgs []jetstream.Msg) error {
+        return repo.UpsertMany(ctx, decode(msgs))
+    },
+})
+```
+
+- One `txmanager.Do` per batch. Inside, one `INSERT INTO processed_messages (message_id, subject, processed_at) VALUES ... ON CONFLICT (message_id) DO NOTHING RETURNING message_id`; `Apply` gets only the messages whose key was inserted, in batch order, and only the first message of a key that repeats inside the batch. After commit every message of the batch is acked.
+- `Key` defaults to `consumer.DefaultIdempotencyKey` (`Nats-Msg-Id`, or `sha256(subject + payload)` without it: two messages with the same subject and payload and no msg id are duplicates). The table is `consumer.ProcessedMessage` (`consumer.AutoMigrateProcessed`).
+- `NoDedup: true` skips the insert. Use it for projections that already have a version guard.
+- A transient error (`Transient`, default `batch.DefaultTransient`) retries the same set while the batch budget lasts (`RetryBudget`, default 2, negative = no retries); after that every remaining message gets `NakDelay(TransientDelay)` (default 1 s).
+- Any other error splits the set in halves, each in its own transaction, down to single messages. A single message with a non-transient error gets `Nak(err)`: the core applies the retry ladder and sends it to `OnPoison` after `MaxAttempts`, or right away if `Apply` returned `batch.Poison(err)`. Healthy messages commit once.
+- `Apply` writes only through `TxManager.GetConnection(ctx)` and does not call external services (it can run several times for the same messages during bisection).
+- `DefaultTransient` is true for SQLSTATE `40001`, `40P01`, `55P03`, `57014`, `57P01`..`57P03` and classes `08` and `53` (any error with a `SQLState() string` method, pgx included), `driver.ErrBadConn`, `context.DeadlineExceeded` and a `net.Error` with `Timeout()`.
+
+**`CoalesceByKey`** groups a batch by key and calls `apply` once with all groups (`[]batch.Group{Key, Msgs}`), groups in order of first appearance and messages inside a group in batch order. `apply` returns one `Result` per group, and that result applies to every message of the group; groups without a result get `Nak(ErrMissingResult)`. `GroupByKey(msgs, key)` is the same grouping for a handler that composes it with `InTx` by hand. A nil `key` or `apply` panics at construction.
+
+#### Processed messages cleanup
+
+`processed_messages` (used by `WithIdempotency` and `batch.InTx`) grows forever unless something deletes old keys. `pkg/nats/jetstream/consumer/cleanup` does it in the background:
+
+```go
+fx.Options(
+    fx.Supply(cleanup.Opts{Duplicates: 2 * time.Minute}),
+    cleanup.Module,
+)
+```
+
+- `cleanup.Module` needs `*gorm.DB` in the graph (an absent DB is a start error) and takes optional `cleanup.Opts`. `Start` runs on `OnStart`, the first pass after `Interval`; `Stop` on `OnStop` waits for the current pass.
+- `Retention` (env `BROKERFX_PROCESSED_RETENTION`, default `48h`): keys older than that are deleted. It must be at least `1h` and greater than `2 × Duplicates` (`Opts.Duplicates`, the stream duplicate window), otherwise `ErrInvalidOpts`. 48h is orders of magnitude above the stream duplicate window (minutes) and the worst retry ladder (1s+5s+30s+2m+5m×k, about 35 minutes at 10 attempts); the margin covers consumer downtime and a manual replay within a day. A key younger than the retention is never deleted, so a redelivery inside the window is still a duplicate.
+- `Interval` (env `BROKERFX_PROCESSED_CLEANUP_INTERVAL`, default `1h`), `BatchLimit` (default 5000).
+- One pass is `DELETE FROM processed_messages WHERE ctid IN (SELECT ctid FROM processed_messages WHERE processed_at < $1 LIMIT $2)` in a loop until a short batch, 100 ms between batches. `RunOnce(ctx)` runs one pass by hand. A failed pass goes to `OnError` and a warning log; the loop keeps running.
+- `cleanup.EnsureIndex(ctx, db)` creates `idx_processed_messages_processed_at` with `CREATE INDEX CONCURRENTLY IF NOT EXISTS` (outside a transaction). `AutoMigrateProcessed` does not create it; call `EnsureIndex` once at startup or add the same statement to the service migrations.
+
 #### Stream
 
 Creates or updates a JetStream stream at startup. Wraps `CreateOrUpdateStream` with a fluent builder.
@@ -471,6 +611,10 @@ func (s *Service) CreateOrder(ctx context.Context, req *CreateOrderRequest) erro
 | `TickInterval` | `time.Duration` | `2s` | Relay polling interval |
 | `DeleteOlderThan` | `time.Duration` | `1h` | Cleanup threshold (UpdateAfterSend only) |
 | `StallThreshold` | `time.Duration` | `5m` | Age after which an IN_FLIGHT row is re-picked |
+| `Batched` | `bool` | `false` | Batched relay R1 (also env `BROKERFX_OUTBOX_RELAY_BATCHED=true\|1`) |
+| `Linger` | `time.Duration` | `0` (`5ms` when batched) | Wait after a wakeup before claiming, so close commits share one batch |
+
+**Batched relay (R1).** With `Config.Batched` (or the env) and the v2 schema, one relay pass is: (1) claim one batch with a single statement, `UPDATE outbox_events SET state='IN_FLIGHT', updated_at=now WHERE id IN (SELECT id ... WHERE (state='PENDING' AND (next_attempt_at IS NULL OR next_attempt_at <= now)) OR (state='IN_FLIGHT' AND updated_at < stall) ORDER BY created_at LIMIT BatchSize FOR UPDATE SKIP LOCKED) RETURNING ...`, sorted by `created_at`; (2) publish: a producer that implements `outbox.BatchProducer` (`JetStreamProducer` does: all `PublishMsgAsync` first, then one timer for all acks, an error per event) gets the whole batch, any other producer gets the old per-event fan-out; (3) successes are deleted (`ModeDeleteAfterSend`) or marked `DONE` with one statement, failures go through the usual attempts/backoff/`outbox_retries` path row by row. After a wakeup the relay waits `Linger`, and repeats the pass while batches come back full. Headers, `Nats-Msg-Id`, signing and KV last-wins are the same as in the old branch. On the legacy schema the old branch runs. Recommended with R1: `ModeDeleteAfterSend` and a partial index in the service migration, `CREATE INDEX IF NOT EXISTS idx_outbox_events_pending_created_at ON outbox_events (created_at) WHERE state <> 'DONE'`.
 
 **Stall recovery:** Events stuck in `IN_FLIGHT` past `StallThreshold` (default 5 minutes) are re-picked and re-published on the next relay cycle (handles a crash between NATS ack and the DB state update). The re-publish carries `Nats-Msg-Id = row.ID`, so the stream `Duplicates` window suppresses the duplicate — which is why `Duplicates` must be `>= 2 × StallThreshold` (see Stream defaults).
 
@@ -872,10 +1016,14 @@ func main() {
 | Setting | Default |
 |---|---|
 | AckPolicy | `AckExplicitPolicy` |
-| AckWait | `10 seconds` |
-| DeliverPolicy | `DeliverAllPolicy` |
+| AckWait | `30 seconds` |
+| DeliverPolicy | `DeliverAllPolicy` (`WithDeliverByStartSequence(n)` for a start sequence, 0 keeps `DeliverAll`) |
+| MaxAckPending | server default (1000); `WithMaxAckPending(n)`; the batch consumer sets `Pipeline × Max` when unset |
 | Pull: MaxMessages | `50` |
 | Pull: Heartbeat | `10 seconds` |
+| Batch: Max / Linger / Pipeline | `16` / `5ms` / `1` (`BROKERFX_BATCH_MAX`, `BROKERFX_BATCH_LINGER`, `BROKERFX_BATCH_PIPELINE`) |
+| Batch: retry ladder | `1s, 5s, 30s, 2m, 5m`, `MaxAttempts = len(Delays)+1` |
+| Processed cleanup | retention `48h` (`BROKERFX_PROCESSED_RETENTION`), interval `1h` (`BROKERFX_PROCESSED_CLEANUP_INTERVAL`), batch `5000` |
 
 ### Outbox Defaults
 
@@ -888,6 +1036,8 @@ func main() {
 | Stall detection | `5 minutes` (IN_FLIGHT revert) |
 | Cleanup ticker | `5 minutes` |
 | Publish timeout | `30 seconds` per batch |
+| Batched (R1) | off (`Config.Batched` or `BROKERFX_OUTBOX_RELAY_BATCHED=true\|1`) |
+| Linger | `5ms` when batched |
 
 ### TimedActor Defaults
 
@@ -933,7 +1083,7 @@ go test -race ./...
 
 ## CI/CD
 
-`.github/workflows/release.yml` runs on every push to `main`:
+`.github/workflows/release.yml` runs on every push to `main` and to `feat/**` branches (release only on `main`):
 
 1. **Test** — `go mod tidy` + `go test -v ./...`
 2. **Integration** — `go test -tags=integration` in `integration/`

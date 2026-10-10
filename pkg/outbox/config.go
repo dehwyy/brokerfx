@@ -47,6 +47,9 @@ type Config struct {
 	RetainParked    time.Duration
 
 	Paused bool
+
+	Batched bool
+	Linger  time.Duration
 }
 
 func DefaultConfig() Config {

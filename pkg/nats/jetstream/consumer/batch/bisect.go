@@ -32,10 +32,7 @@ func (h *inTx) bisect(
 				continue
 			}
 			for _, index := range subset {
-				results[index] = NakDelay(
-					h.transientDelay,
-					err,
-				)
+				results[index] = h.transientResult(err)
 			}
 			return
 		}

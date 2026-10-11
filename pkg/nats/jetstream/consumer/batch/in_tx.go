@@ -11,9 +11,8 @@ import (
 )
 
 const (
-	defaultRetryBudget    = 2
-	defaultTransientDelay = time.Second
-	defaultTxName         = "batch-in-tx"
+	defaultRetryBudget = 2
+	defaultTxName      = "batch-in-tx"
 )
 
 type inTx struct {
@@ -57,8 +56,8 @@ func InTx(opts InTxOpts) (Handler, error) {
 	case h.retryBudget < 0:
 		h.retryBudget = 0
 	}
-	if h.transientDelay <= 0 {
-		h.transientDelay = defaultTransientDelay
+	if h.transientDelay < 0 {
+		h.transientDelay = 0
 	}
 	if h.txName == "" {
 		h.txName = defaultTxName

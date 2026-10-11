@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.5.1
+
+- `batch.InTx`: when the transient retry budget is spent the remaining messages get `Nak(err)` instead of `NakDelay(1s)`. Before, every attempt was retried after 1 s and still counted toward `MaxAttempts`, so a Postgres outage or failover longer than about 6 s sent every message of that window to `OnPoison` (DLQ). Now the retry ladder of `Opts.Delays` applies (1s/5s/30s/2m/5m by default, about 8.5 minutes before `OnPoison`). `InTxOpts.TransientDelay` no longer has a default; a positive value is an explicit override of the ladder delay.
+
 ## v0.5.0
 
 - New package `pkg/nats/jetstream/consumer/batch`: a pull consumer that gives the handler a batch (`Handler func(ctx, []jetstream.Msg) []batch.Result`) and applies a verdict per message (`Ack`, `Nak`, `NakDelay`, `Term`) after the handler returns. Fetch loop with `Max` / `Linger` / `Pipeline`, one `InProgress` heartbeat per batch every `AckWait/2`, panic isolation (unsettled messages are re-run one by one), `Drain(ctx)` that naks fetched-but-not-started messages and waits for batches in progress, `OnFatal` once when the consumer is deleted. Survives a NATS server restart.

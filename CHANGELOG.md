@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.6.1
+
+- `outbox.EnsurePendingIndex`: `pg_try_advisory_lock` instead of a blocking `pg_advisory_lock`; when another instance holds the lock the call returns `nil` at once. In v0.6.0 a second instance waited for the lock inside `SELECT pg_advisory_lock` with a snapshot, `CREATE INDEX CONCURRENTLY` waited for that snapshot, and Postgres reported a deadlock, leaving the index invalid. The build now runs with `statement_timeout = 0` on its connection and restores the previous value afterwards.
+
 ## v0.6.0
 
 - Outbox claim v2 behind `Config.ClaimV2` or env `BROKERFX_OUTBOX_CLAIM_V2=true|1` (off by default). One statement `WITH c AS MATERIALIZED (SELECT id ... WHERE state <> 'DONE' AND state = 'PENDING' AND (next_attempt_at IS NULL OR next_attempt_at <= now) ORDER BY created_at LIMIT n FOR UPDATE SKIP LOCKED) UPDATE ... FROM c ... RETURNING`: literal states, no `OR` with stalled rows, so the partial index `idx_outbox_events_pending_created_at` is used and the plan no longer falls into a Nested Loop Semi Join on empty statistics. Stalled `IN_FLIGHT` rows go back to `PENDING` in a separate statement at most once per `StallReclaimInterval` (default 1m, not above `StallThreshold`). Each claim/reclaim has a `ClaimTimeout` (default 5s). Applies to the batched and the plain relay on the v2 schema; the published set and order are the same as with the flag off.

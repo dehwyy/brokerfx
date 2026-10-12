@@ -613,8 +613,31 @@ func (s *Service) CreateOrder(ctx context.Context, req *CreateOrderRequest) erro
 | `StallThreshold` | `time.Duration` | `5m` | Age after which an IN_FLIGHT row is re-picked |
 | `Batched` | `bool` | `false` | Batched relay R1 (also env `BROKERFX_OUTBOX_RELAY_BATCHED=true\|1`) |
 | `Linger` | `time.Duration` | `0` (`5ms` when batched) | Wait after a wakeup before claiming, so close commits share one batch |
+| `ClaimV2` | `bool` | `false` | Claim v2 (also env `BROKERFX_OUTBOX_CLAIM_V2=true\|1`), see below |
+| `ClaimTimeout` | `time.Duration` | `5s` | Claim v2 only: deadline of one claim or reclaim statement |
+| `StallReclaimInterval` | `time.Duration` | `1m` (not above `StallThreshold`) | Claim v2 only: how often stalled `IN_FLIGHT` rows are returned to `PENDING` |
 
 **Batched relay (R1).** With `Config.Batched` (or the env) and the v2 schema, one relay pass is: (1) claim one batch with a single statement, `UPDATE outbox_events SET state='IN_FLIGHT', updated_at=now WHERE id IN (SELECT id ... WHERE (state='PENDING' AND (next_attempt_at IS NULL OR next_attempt_at <= now)) OR (state='IN_FLIGHT' AND updated_at < stall) ORDER BY created_at LIMIT BatchSize FOR UPDATE SKIP LOCKED) RETURNING ...`, sorted by `created_at`; (2) publish: a producer that implements `outbox.BatchProducer` (`JetStreamProducer` does: all `PublishMsgAsync` first, then one timer for all acks, an error per event) gets the whole batch, any other producer gets the old per-event fan-out; (3) successes are deleted (`ModeDeleteAfterSend`) or marked `DONE` with one statement, failures go through the usual attempts/backoff/`outbox_retries` path row by row. After a wakeup the relay waits `Linger`, and repeats the pass while batches come back full. Headers, `Nats-Msg-Id`, signing and KV last-wins are the same as in the old branch. On the legacy schema the old branch runs. Recommended with R1: `ModeDeleteAfterSend` and a partial index in the service migration, `CREATE INDEX IF NOT EXISTS idx_outbox_events_pending_created_at ON outbox_events (created_at) WHERE state <> 'DONE'`.
+
+**Claim v2 (v0.6.0, opt-in).** `Config.ClaimV2` or env `BROKERFX_OUTBOX_CLAIM_V2=true|1` (env is read once in `NewRelay` and OR'd with the field). Works on the v2 schema in both the batched and the plain relay; on the legacy schema the old branch runs. The claim is one statement that touches only `PENDING` rows:
+
+```sql
+WITH c AS MATERIALIZED (
+  SELECT id FROM outbox_events
+  WHERE state <> 'DONE' AND state = 'PENDING'
+    AND (next_attempt_at IS NULL OR next_attempt_at <= $now)
+  ORDER BY created_at LIMIT $batch
+  FOR UPDATE SKIP LOCKED)
+UPDATE outbox_events o SET state = 'IN_FLIGHT', updated_at = $now
+FROM c WHERE o.id = c.id
+RETURNING o.id, o.topic, o.payload, o.headers, o.attempts, o.created_at
+```
+
+States are literals, so the planner can use the partial index `idx_outbox_events_pending_created_at (created_at) WHERE state <> 'DONE'` (the literal `state <> 'DONE'` matches its predicate exactly), and `MATERIALIZED` keeps the `LIMIT ... SKIP LOCKED` subquery from being re-run inside a semi join. Without the old `OR (state = 'IN_FLIGHT' AND updated_at < stall)` the plan does not depend on table statistics. Stalled `IN_FLIGHT` rows are returned to `PENDING` by a separate statement (`WITH s AS MATERIALIZED (... state = 'IN_FLIGHT' AND updated_at < now - StallThreshold ORDER BY updated_at LIMIT 10×BatchSize FOR UPDATE SKIP LOCKED) UPDATE ... SET state = 'PENDING'`) at most once per `StallReclaimInterval` per relay (the first claim after start runs it), and the next claim picks them up by `created_at` as before; `attempts` is unchanged. Each statement runs with `context.WithTimeout(ClaimTimeout)` detached from the relay context, so a slow claim is cancelled instead of holding a snapshot (`xmin`) open. Publishing, settling, retries, parking, signing and KV last-wins are unchanged; the claimed set and its order are the same as with the flag off. Worst-case stall recovery is `StallThreshold + StallReclaimInterval` instead of `StallThreshold`, so the `Duplicates >= 2 × StallThreshold` invariant still holds with the defaults (5m + 1m < 15m).
+
+`outbox.EnsurePendingIndex(ctx, db)` creates that partial index with `CREATE INDEX CONCURRENTLY IF NOT EXISTS` on one connection under `pg_advisory_lock(hashtext('brokerfx.outbox.pending_index'))`, drops and rebuilds it when a previous concurrent build left it invalid, and does nothing when `outbox_events` does not exist. It must run outside a transaction (not inside a transactional goose migration). `AutoMigrate` does not create it: `AutoMigrate` runs on every start in some services, and a non-concurrent index build blocks writes to a large `outbox_events`. Services that already create the same index themselves (payout-processing `ensure_outbox_pending_index.go`) need not call it.
+
+**`SaveMessages` (v0.6.0).** `(*OutboxStore).SaveMessages(ctx, messages []Message, opts ...MessageOption) error` writes all messages in the caller's transaction (`txmanager.GetConnection(ctx)`) with one multi-row `INSERT` per 500 rows instead of one `INSERT` per `SaveMessage`. `opts` (`WithHeaders`) apply to every message, a message's own headers (`KVDelete`) win over them, as in `SaveMessage`. `created_at` is assigned in the client as `now` truncated to microseconds plus `i` µs for the i-th message, so the relay publishes the slice in input order. Validation happens before any write: a `Message` error (`ErrInvalidKVBucket`, `ErrInvalidKVKey`), `ErrReservedHeader`, or `ErrSchemaOutdated` (headers on the legacy schema) returns without inserting anything. An empty slice is a no-op. Call `WakeupRelay` after commit as with `SaveMessage`.
 
 **Stall recovery:** Events stuck in `IN_FLIGHT` past `StallThreshold` (default 5 minutes) are re-picked and re-published on the next relay cycle (handles a crash between NATS ack and the DB state update). The re-publish carries `Nats-Msg-Id = row.ID`, so the stream `Duplicates` window suppresses the duplicate — which is why `Duplicates` must be `>= 2 × StallThreshold` (see Stream defaults).
 

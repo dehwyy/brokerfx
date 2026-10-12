@@ -50,6 +50,10 @@ type Config struct {
 
 	Batched bool
 	Linger  time.Duration
+
+	ClaimV2              bool
+	ClaimTimeout         time.Duration
+	StallReclaimInterval time.Duration
 }
 
 func DefaultConfig() Config {

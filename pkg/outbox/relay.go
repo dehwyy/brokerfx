@@ -15,7 +15,6 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 )
 
 const envRelayPaused = "BROKERFX_OUTBOX_RELAY_PAUSED"
@@ -86,6 +85,8 @@ type OutboxRelay struct {
 
 	paused atomic.Bool
 
+	lastReclaim time.Time
+
 	cancel context.CancelFunc
 	done   chan struct{}
 }
@@ -96,9 +97,15 @@ func NewRelay(deps RelayDeps) *OutboxRelay {
 	if cfg.Mode == "" {
 		batched := cfg.Batched
 		linger := cfg.Linger
+		claimV2 := cfg.ClaimV2
+		claimTimeout := cfg.ClaimTimeout
+		stallReclaimInterval := cfg.StallReclaimInterval
 		cfg = DefaultConfig()
 		cfg.Batched = batched
 		cfg.Linger = linger
+		cfg.ClaimV2 = claimV2
+		cfg.ClaimTimeout = claimTimeout
+		cfg.StallReclaimInterval = stallReclaimInterval
 	}
 	cfg = resolveBatched(cfg)
 	// Guard the stall invariant: a zero threshold would re-pick every IN_FLIGHT row
@@ -106,6 +113,7 @@ func NewRelay(deps RelayDeps) *OutboxRelay {
 	if cfg.StallThreshold <= 0 {
 		cfg.StallThreshold = DefaultConfig().StallThreshold
 	}
+	cfg = resolveClaim(cfg)
 
 	r := &OutboxRelay{
 		store:          deps.Store,
@@ -385,54 +393,15 @@ func (r *OutboxRelay) processBatch(ctx context.Context) {
 	caps := r.ensureSchemaCaps(ctx)
 
 	var events []relayEvent
-
-	err := db.Transaction(func(tx *gorm.DB) error {
-		stalledThreshold := time.Now().Add(-r.config.StallThreshold)
-
-		lockedBase := tx.
-			Clauses(clause.Locking{
-				Strength: "UPDATE",
-				Options:  "SKIP LOCKED",
-			}).
-			Order("created_at ASC").
-			Limit(r.config.BatchSize)
-
-		var locked *gorm.DB
-		if caps.V2 {
-			locked = lockedBase.Where(
-				"(state = ? AND (next_attempt_at IS NULL OR next_attempt_at <= ?)) OR (state = ? AND updated_at < ?)",
-				StatePending, time.Now(),
-				StateInFlight, stalledThreshold,
-			)
-		} else {
-			locked = lockedBase.
-				Where("state = ?", StatePending).
-				Or("state = ? AND updated_at < ?", StateInFlight, stalledThreshold)
-		}
-
-		var err error
-		if caps.V2 {
-			events, err = r.lockRowsV2(locked)
-		} else {
-			events, err = r.lockRowsLegacy(locked)
-		}
-		if err != nil {
-			return err
-		}
-
-		if len(events) == 0 {
-			return nil
-		}
-
-		ids := make([]string, len(events))
-		for i, ev := range events {
-			ids[i] = ev.ID
-		}
-
-		return tx.Model(&OutboxEvent{}).
-			Where("id IN ?", ids).
-			Update("state", StateInFlight).Error
-	})
+	var err error
+	if r.config.ClaimV2 && caps.V2 {
+		events, err = r.claimBatchV2(ctx)
+	} else {
+		events, err = r.claimLegacy(
+			db,
+			caps,
+		)
+	}
 
 	if err != nil {
 		r.logger.Error().Err(err).Msg("failed to fetch and lock outbox events")

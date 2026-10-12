@@ -9,6 +9,10 @@ import (
 const claimBatchQuery = `UPDATE outbox_events SET state = ?, updated_at = ? WHERE id IN (SELECT id FROM outbox_events WHERE (state = ? AND (next_attempt_at IS NULL OR next_attempt_at <= ?)) OR (state = ? AND updated_at < ?) ORDER BY created_at LIMIT ? FOR UPDATE SKIP LOCKED) RETURNING id, topic, payload, headers, attempts, created_at`
 
 func (r *OutboxRelay) claimBatch(ctx context.Context) ([]relayEvent, error) {
+	if r.config.ClaimV2 {
+		return r.claimBatchV2(ctx)
+	}
+
 	now := time.Now()
 
 	var rows []outboxEventRow

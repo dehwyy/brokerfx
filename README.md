@@ -617,6 +617,14 @@ func (s *Service) CreateOrder(ctx context.Context, req *CreateOrderRequest) erro
 | `ClaimTimeout` | `time.Duration` | `5s` | Claim v2 only: deadline of one claim or reclaim statement |
 | `StallReclaimInterval` | `time.Duration` | `1m` (not above `StallThreshold`) | Claim v2 only: how often stalled `IN_FLIGHT` rows are returned to `PENDING` |
 
+Env overrides (v0.6.2, read once in `NewRelay`, `time.ParseDuration`, positive only; an invalid value is ignored with a warning and the env wins over `Config`):
+
+| Env | Overrides |
+|---|---|
+| `BROKERFX_OUTBOX_CLAIM_TIMEOUT` | `ClaimTimeout` |
+| `BROKERFX_OUTBOX_STALL_THRESHOLD` | `StallThreshold` |
+| `BROKERFX_OUTBOX_STALL_RECLAIM_INTERVAL` | `StallReclaimInterval` |
+
 **Batched relay (R1).** With `Config.Batched` (or the env) and the v2 schema, one relay pass is: (1) claim one batch with a single statement, `UPDATE outbox_events SET state='IN_FLIGHT', updated_at=now WHERE id IN (SELECT id ... WHERE (state='PENDING' AND (next_attempt_at IS NULL OR next_attempt_at <= now)) OR (state='IN_FLIGHT' AND updated_at < stall) ORDER BY created_at LIMIT BatchSize FOR UPDATE SKIP LOCKED) RETURNING ...`, sorted by `created_at`; (2) publish: a producer that implements `outbox.BatchProducer` (`JetStreamProducer` does: all `PublishMsgAsync` first, then one timer for all acks, an error per event) gets the whole batch, any other producer gets the old per-event fan-out; (3) successes are deleted (`ModeDeleteAfterSend`) or marked `DONE` with one statement, failures go through the usual attempts/backoff/`outbox_retries` path row by row. After a wakeup the relay waits `Linger`, and repeats the pass while batches come back full. Headers, `Nats-Msg-Id`, signing and KV last-wins are the same as in the old branch. On the legacy schema the old branch runs. Recommended with R1: `ModeDeleteAfterSend` and a partial index in the service migration, `CREATE INDEX IF NOT EXISTS idx_outbox_events_pending_created_at ON outbox_events (created_at) WHERE state <> 'DONE'`.
 
 **Claim v2 (v0.6.0, opt-in).** `Config.ClaimV2` or env `BROKERFX_OUTBOX_CLAIM_V2=true|1` (env is read once in `NewRelay` and OR'd with the field). Works on the v2 schema in both the batched and the plain relay; on the legacy schema the old branch runs. The claim is one statement that touches only `PENDING` rows:
@@ -675,6 +683,17 @@ err := s.outboxStore.SaveMessage(ctx, outbox.KVDelete("merchant-config", merchan
 **`kv.Ensure`.** `pkg/nats/jetstream/kv.Ensure(ctx, js, kv.Opts{Bucket, Replicas, History, Storage, MaxBytes, Duplicates})` idempotently creates or reconciles the KV bucket's backing stream (`KV_<bucket>`). `Replicas < 1` returns `kv.ErrReplicasRequired` before any stream call — callers must pass an explicit replica count, there is no default. `Duplicates` defaults to `kv.DefaultDuplicates` (15m) when zero, matching the outbox relay's own dedup window — a KV bucket written through the outbox should use the same or a longer window. Repeated calls with the same `Opts` only issue an `UpdateStream` when the live stream config actually differs; `Replicas` and `MaxBytes` come from the caller's config, never hardcoded (stage: 1, prod: 3 after ОК-1).
 
 **Signer.** Pass a `Signer` (`Sign(subject string, headers map[string]string, payload []byte) error`) as the optional `Signer` field on `RelayDeps` to have the relay sign every published message before publish, headers included. `pkg/nats/signature.NewEd25519Signer(apiKeyID, privateKey)` is the Ed25519 implementation already used by `pkg/nats/core`'s middleware (same `Sign`/`Verify`, same headers `X-API-Key-ID`/`X-Timestamp`/`X-Signature`). Signing is skipped for `$KV.*` subjects, since a KV publish carries no request to authenticate on the receiving side.
+
+`pkg/nats/signature.NewKeyedResigner(keys map[string]ed25519.PrivateKey)` (v0.6.2) is a `Signer` for rows saved already signed: at publish time it refreshes `X-Timestamp` and `X-Signature` when `X-API-Key-ID` names one of its keys, so a row that waited in the outbox does not go out with an expired signature. A message with another key or without a signature is left unchanged.
+
+```go
+deps := outbox.RelayDeps{
+	Store:  store,
+	Signer: signature.NewKeyedResigner(map[string]ed25519.PrivateKey{
+		"payout-processing": privateKey,
+	}),
+}
+```
 
 **Observer.** Pass an `Observer` as the optional `Observer` field on `RelayDeps` to get relay lifecycle hooks: `OnPublished(n)`, `OnFailed(n)`, `OnParked(eventID, subject, lastError)`, `OnStats(stats Stats)` (`Stats` — `Pending`, `InFlight`, `Done`, `Parked`, `OldestPendingAge`). `OnStats` fires every `Config.StatsInterval` when set. All four are best-effort hooks for metrics/alerting; a nil `Observer` (the default) skips them entirely.
 

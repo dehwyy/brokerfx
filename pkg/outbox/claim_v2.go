@@ -4,6 +4,8 @@ import (
 	"context"
 	"sort"
 	"time"
+
+	"gorm.io/gorm"
 )
 
 const reclaimBatchFactor = 10
@@ -62,14 +64,24 @@ func (r *OutboxRelay) claimBatchV2(ctx context.Context) ([]relayEvent, error) {
 
 	var rows []outboxEventRow
 	if err := r.store.DB().
-		WithContext(claimCtx).
-		Raw(
-			claimBatchV2Query,
-			now,
-			r.config.BatchSize,
-			now,
-		).
-		Scan(&rows).Error; err != nil {
+		WithContext(work).
+		Transaction(
+			func(tx *gorm.DB) error {
+				if err := tx.
+					WithContext(claimCtx).
+					Raw(
+						claimBatchV2Query,
+						now,
+						r.config.BatchSize,
+						now,
+					).
+					Scan(&rows).Error; err != nil {
+					return err
+				}
+
+				return claimCtx.Err()
+			},
+		); err != nil {
 		return nil, err
 	}
 

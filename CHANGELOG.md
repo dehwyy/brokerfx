@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.6.2
+
+- Outbox claim v2 runs in an explicit transaction. Before, the claim `UPDATE` could finish and `ClaimTimeout` expire right after it: the statement was already committed, the rows stayed `IN_FLIGHT` with no receiver until `StallThreshold` (5m), and were then published with an expired signature. Now the claim is committed only when the rows were read and the claim context is still alive; otherwise the transaction rolls back and the rows stay `PENDING`.
+- Env `BROKERFX_OUTBOX_CLAIM_TIMEOUT`, `BROKERFX_OUTBOX_STALL_THRESHOLD`, `BROKERFX_OUTBOX_STALL_RECLAIM_INTERVAL` (`time.ParseDuration`, must be positive). An invalid value is ignored with a warning; a valid value wins over `Config`.
+- `signature.NewKeyedResigner(keys map[string]ed25519.PrivateKey)`: an `outbox.Signer` that refreshes the signature at publish time for messages signed with one of its keys. Messages signed with another key or not signed at all pass through unchanged.
+- With the new env unset and no `Signer` configured the behaviour is the same as in v0.6.1.
+
 ## v0.6.1
 
 - `outbox.EnsurePendingIndex`: `pg_try_advisory_lock` instead of a blocking `pg_advisory_lock`; when another instance holds the lock the call returns `nil` at once. In v0.6.0 a second instance waited for the lock inside `SELECT pg_advisory_lock` with a snapshot, `CREATE INDEX CONCURRENTLY` waited for that snapshot, and Postgres reported a deadlock, leaving the index invalid. The build now runs with `statement_timeout = 0` on its connection and restores the previous value afterwards.

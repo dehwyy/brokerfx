@@ -6,3 +6,5 @@ import (
 )
 
 var _ outbox.Signer = (*signature.Ed25519Signer)(nil)
+
+var _ outbox.Signer = (*signature.KeyedResigner)(nil)

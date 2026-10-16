@@ -26,11 +26,16 @@ func buildMessageRows(
 			return nil, message.err
 		}
 
+		own, err := message.ownHeaders()
+		if err != nil {
+			return nil, err
+		}
+
 		rowHeaders := sharedHeaders
-		if len(message.headers) > 0 {
+		if len(own) > 0 {
 			rowHeaders, err = encodeHeaders(mergeHeaders(
 				headers,
-				message.headers,
+				own,
 			))
 			if err != nil {
 				return nil, err

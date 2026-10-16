@@ -78,13 +78,15 @@ func (s *OutboxStore) SaveMessage(ctx context.Context, msg Message, opts ...Mess
 		return err
 	}
 
-	if len(msg.headers) > 0 {
-		if options.headers == nil {
-			options.headers = make(map[string]string, len(msg.headers))
-		}
-		for k, v := range msg.headers {
-			options.headers[k] = v
-		}
+	own, err := msg.ownHeaders()
+	if err != nil {
+		return err
+	}
+	if len(own) > 0 {
+		options.headers = mergeHeaders(
+			options.headers,
+			own,
+		)
 	}
 
 	payload := msg.Payload

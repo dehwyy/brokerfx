@@ -27,6 +27,7 @@ var (
 type Message struct {
 	Subject string
 	Payload []byte
+	Headers map[string]string
 
 	headers map[string]string
 	err     error
@@ -107,12 +108,20 @@ func newMessageOptions(opts []MessageOption) (messageOptions, error) {
 		opt(&options)
 	}
 
-	reserved := textproto.CanonicalMIMEHeaderKey(jetstream.MsgIDHeader)
-	for k := range options.headers {
-		if textproto.CanonicalMIMEHeaderKey(k) == reserved {
-			return messageOptions{}, ErrReservedHeader
-		}
+	if err := checkReservedHeaders(options.headers); err != nil {
+		return messageOptions{}, err
 	}
 
 	return options, nil
+}
+
+func checkReservedHeaders(headers map[string]string) error {
+	reserved := textproto.CanonicalMIMEHeaderKey(jetstream.MsgIDHeader)
+	for k := range headers {
+		if textproto.CanonicalMIMEHeaderKey(k) == reserved {
+			return ErrReservedHeader
+		}
+	}
+
+	return nil
 }

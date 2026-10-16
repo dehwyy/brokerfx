@@ -100,7 +100,12 @@ func NewRelay(deps RelayDeps) *OutboxRelay {
 		claimV2 := cfg.ClaimV2
 		claimTimeout := cfg.ClaimTimeout
 		stallReclaimInterval := cfg.StallReclaimInterval
+		knobs := cfg
 		cfg = DefaultConfig()
+		cfg = keepThroughputKnobs(
+			cfg,
+			knobs,
+		)
 		cfg.Batched = batched
 		cfg.Linger = linger
 		cfg.ClaimV2 = claimV2
@@ -114,6 +119,7 @@ func NewRelay(deps RelayDeps) *OutboxRelay {
 		cfg.StallThreshold = DefaultConfig().StallThreshold
 	}
 	cfg = resolveClaim(cfg)
+	cfg = resolveThroughput(cfg)
 
 	r := &OutboxRelay{
 		store:          deps.Store,
@@ -179,6 +185,9 @@ func (r *OutboxRelay) Run(ctx context.Context) {
 	pauseLogTicker := time.NewTicker(pauseLogInterval)
 	defer pauseLogTicker.Stop()
 
+	pendingChan, stopPending := r.pendingGaugeTicker()
+	defer stopPending()
+
 	if r.Paused() {
 		r.logPausedState(ctx)
 	}
@@ -207,6 +216,8 @@ func (r *OutboxRelay) Run(ctx context.Context) {
 			r.cleanupDone()
 		case <-statsChan:
 			r.sendStats(ctx)
+		case <-pendingChan:
+			r.sendPending(ctx)
 		case <-pauseLogTicker.C:
 			r.logPausedState(ctx)
 		}

@@ -54,6 +54,8 @@ type Config struct {
 	ClaimV2              bool
 	ClaimTimeout         time.Duration
 	StallReclaimInterval time.Duration
+
+	PendingGaugeInterval time.Duration
 }
 
 func DefaultConfig() Config {

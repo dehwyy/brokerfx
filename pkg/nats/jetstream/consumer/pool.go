@@ -28,6 +28,16 @@ func (p *pool) acquire() {
 	p.busy.Add(1)
 }
 
+func (p *pool) tryAcquire() bool {
+	select {
+	case p.slots <- struct{}{}:
+		p.busy.Add(1)
+		return true
+	default:
+		return false
+	}
+}
+
 func (p *pool) release() {
 	p.busy.Done()
 	<-p.slots

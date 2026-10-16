@@ -3,7 +3,6 @@ package producer
 import (
 	"context"
 
-	cryptov1 "github.com/dehwyy/brokerfx/pkg/crypto/v1"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/rs/zerolog/log"
@@ -54,28 +53,13 @@ func (p *Producer) Produce(
 	event Event,
 	opts ...PublishOption,
 ) error {
-	cfg := &publishConfig{}
-	for _, opt := range opts {
-		opt(cfg)
-	}
-
-	data, err := cryptov1.Encode(event.Data())
+	msg, err := p.message(
+		ctx,
+		event,
+		opts,
+	)
 	if err != nil {
 		return err
-	}
-
-	msg := &nats.Msg{
-		Subject: event.Subject(),
-		Data:    data,
-		Header:  nats.Header{},
-	}
-
-	if cfg.msgID != "" {
-		msg.Header.Set(jetstream.MsgIDHeader, cfg.msgID)
-	}
-
-	for _, mw := range p.beforePublishMiddleware {
-		mw(ctx, msg)
 	}
 
 	ack, err := p.js.PublishMsgAsync(msg)

@@ -193,6 +193,8 @@ type Opts struct {
 producer.Produce(&OrderCreatedEvent{orderID: "123", payload: p})
 ```
 
+`Produce` does not report a lost publish, so it is not for money or status events. `ProduceSync(ctx, event, opts...)` publishes with `PublishMsg`, waits for the PubAck within `ctx` and returns the error (no stream for the subject, timeout, a server rejection). Inside a business transaction use the outbox instead of either.
+
 #### Consumer
 
 Creates a durable JetStream consumer and starts a subscription loop. The handler is authoritative: the message is **Ack'd on success and Nak'd on error** (redelivery). Panics are recovered per-message and Nak'd.

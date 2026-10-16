@@ -10,7 +10,6 @@ import (
 	cryptov1 "github.com/dehwyy/brokerfx/pkg/crypto/v1"
 	"github.com/dehwyy/brokerfx/pkg/nats/jetstream/producer"
 	"github.com/dehwyy/txmanagerfx/pkg/txmanager"
-	"github.com/google/uuid"
 	"github.com/rs/zerolog/log"
 	"gorm.io/gorm"
 )
@@ -57,8 +56,13 @@ func (s *OutboxStore) Save(ctx context.Context, event producer.Event) error {
 		return err
 	}
 
+	eventID, err := newEventID()
+	if err != nil {
+		return err
+	}
+
 	return s.txmanager.GetConnection(ctx).Create(&OutboxEvent{
-		ID:      uuid.NewString(),
+		ID:      eventID,
 		Topic:   event.Subject(),
 		Payload: data,
 	}).Error
@@ -97,9 +101,14 @@ func (s *OutboxStore) SaveMessage(ctx context.Context, msg Message, opts ...Mess
 		return ErrSchemaOutdated
 	}
 
+	eventID, err := newEventID()
+	if err != nil {
+		return err
+	}
+
 	if !caps.V2 {
 		return s.txmanager.GetConnection(ctx).Create(&OutboxEvent{
-			ID:      uuid.NewString(),
+			ID:      eventID,
 			Topic:   msg.Subject,
 			Payload: payload,
 			State:   StatePending,
@@ -107,7 +116,7 @@ func (s *OutboxStore) SaveMessage(ctx context.Context, msg Message, opts ...Mess
 	}
 
 	row := outboxEventRow{
-		ID:      uuid.NewString(),
+		ID:      eventID,
 		Topic:   msg.Subject,
 		Payload: payload,
 		State:   StatePending,

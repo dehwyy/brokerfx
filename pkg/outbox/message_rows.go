@@ -3,8 +3,6 @@ package outbox
 import (
 	"encoding/json"
 	"time"
-
-	"github.com/google/uuid"
 )
 
 func buildMessageRows(
@@ -48,9 +46,14 @@ func buildMessageRows(
 			payload = []byte{}
 		}
 
+		eventID, err := newEventID()
+		if err != nil {
+			return nil, err
+		}
+
 		createdAt := base.Add(time.Duration(i) * time.Microsecond)
 		rows[i] = outboxEventRow{
-			ID:        uuid.NewString(),
+			ID:        eventID,
 			Topic:     message.Subject,
 			Payload:   payload,
 			State:     StatePending,

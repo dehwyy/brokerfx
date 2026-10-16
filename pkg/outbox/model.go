@@ -17,8 +17,8 @@ type OutboxEvent struct {
 	ID        string      `gorm:"primaryKey;default:gen_random_uuid()"`
 	Topic     string      `gorm:"type:varchar(255);not null"`
 	Payload   []byte      `gorm:"type:bytea;not null"`
-	State     OutboxState `gorm:"type:varchar(50);not null;default:'PENDING';index"`
-	CreatedAt time.Time   `gorm:"index;autoCreateTime"`
+	State     OutboxState `gorm:"type:varchar(50);not null;default:'PENDING'"`
+	CreatedAt time.Time   `gorm:"autoCreateTime"`
 	UpdatedAt time.Time   `gorm:"autoUpdateTime"`
 }
 

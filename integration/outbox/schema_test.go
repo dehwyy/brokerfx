@@ -175,3 +175,38 @@ func TestSchemaV1EventInsertedIntoV2TableGetsAttemptsZeroAndNullHeaders(t *testi
 	require.Equal(t, 0, attempts)
 	require.False(t, headers.Valid)
 }
+
+func TestAutoMigrateOnCleanDBSkipsRedundantIndexes(t *testing.T) {
+	t.Parallel()
+
+	db := testenv.Postgres(t)
+	require.NoError(
+		t,
+		outbox.AutoMigrate(db),
+	)
+
+	require.False(
+		t,
+		regclassExists(
+			t,
+			db,
+			"idx_outbox_events_state",
+		),
+	)
+	require.False(
+		t,
+		regclassExists(
+			t,
+			db,
+			"idx_outbox_events_created_at",
+		),
+	)
+	require.True(
+		t,
+		regclassExists(
+			t,
+			db,
+			"idx_outbox_events_state_updated_at",
+		),
+	)
+}

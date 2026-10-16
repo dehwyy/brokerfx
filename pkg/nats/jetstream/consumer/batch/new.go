@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	consumeroptsbuilder "github.com/dehwyy/brokerfx/pkg/nats/jetstream/consumer/consumer-opts-builder"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/rs/zerolog/log"
 )
@@ -23,7 +24,10 @@ func New(opts Opts) (*Consumer, error) {
 	}
 
 	cfg, err := validate(
-		opts.ConsumerOptsBuilder.Build(),
+		consumeroptsbuilder.FitReplicas(
+			opts.ConsumerOptsBuilder.Build(),
+			opts.Stream.Config(),
+		),
 		s,
 	)
 	if err != nil {

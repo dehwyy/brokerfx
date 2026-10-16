@@ -54,7 +54,10 @@ func New(opts Opts) (*Consumer, error) {
 		return nil, err
 	}
 
-	cfg := opts.ConsumerOptsBuilder.Build()
+	cfg := consumeroptsbuilder.FitReplicas(
+		opts.ConsumerOptsBuilder.Build(),
+		opts.Stream.Config(),
+	)
 	consumer, err := opts.JetStream.CreateOrUpdateConsumer(
 		context.Background(),
 		opts.Stream.Name(),

@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.7.0
+
+- timedactor: `Config.MarkerTTL` (0 = off, at least 1s). Fired and cleared keys are removed with `Purge(PurgeTTL(MarkerTTL))` under the same revision guard, and the bucket gets `LimitMarkerTTL`, so delete markers expire after `MarkerTTL` instead of living for `BucketTTL`. With `MarkerTTL = 0` an existing bucket keeps its marker TTL. Rollback trap: once enabled, an image below v0.7.0 crash-loops with `message TTL status can not be disabled`; delete the bucket before rolling back and let the service reconciler restore the timers (mandatory).
+- timedactor: `Config.RescanInterval` (0 = rescan every `CheckInterval` as before). `> 0` sets the rescan period, adds a rescan right after the initial watch values, and retries an unexpected key removal error locally after `CheckInterval` instead of skipping the callback until the next rescan.
+- consumer: `Opts.MaxInFlight` / `BROKERFX_CONSUMER_MAX_IN_FLIGHT` (0 = one goroutine per message as before). `K > 0` bounds running handlers to `K`, pulls `K` messages, blocks the receive callback while all slots are busy, heartbeats a waiting message from receipt and uses a heartbeat of `min(5s, AckWait/3)`. `Drainer.DrainContext(ctx)` waits for started handlers within `ctx`; `Drain()` does the same without a deadline.
+- consumer: `Opts.NakBackoff` / `BROKERFX_CONSUMER_NAK_BACKOFF` (off by default; `true` = `consumer.DefaultNakDelays` 1s/5s/30s/2m/5m, or a list such as `1s,2s,5s`). All three NAKs (handler error, before-middleware error, panic) become `NakWithDelay` by `NumDelivered`. Without `MaxDeliver` a failing message is redelivered forever. `batch.DefaultDelays` is now the same slice as `consumer.DefaultNakDelays`. Invalid explicit opts return `consumer.ErrInvalidOpts`; invalid env logs a warning and keeps the default.
+- consumer-opts-builder: `WithReplicas(n)` (0 = inherit) and `FitReplicas(cfg, streamCfg)`, applied by `consumer.New` and `batch.New`: a count the server would reject (not the stream's on workqueue/interest, above the stream's on limits) is reset to 0 with a warning. `(*stream.Stream).Config()` returns the cached stream config.
+- stream-opts-builder: `RoleCommand` and `RoleReply` default to no compression, event/result/DLQ keep S2; `WithCompression` wins in either call order; `CompressionFor(role)` for raw configs. Existing command/reply streams switch to none on the next start (new blocks only).
+- stream: `Duplicates` is clamped to `MaxAge` when `MaxAge > 0` and the window is longer, in `Build()`, `stream.CreateOrUpdate` and `kv.Ensure` (bucket TTL), with a warning (`FitDuplicates`). Valid configs are unchanged.
+- outbox: event ids are UUIDv7 by default (`BROKERFX_OUTBOX_ID_V7=false` for UUIDv4, read once per process); string format, `Nats-Msg-Id` and `processed_messages` are unchanged. `OutboxEvent` no longer declares the `state` and `created_at` indexes, so `AutoMigrate` does not create `idx_outbox_events_state` / `idx_outbox_events_created_at` on a clean database; existing indexes are not dropped.
+- Logs: `outbox batch processed` and the two `hold released` lines of timedactor moved from info to debug.
+- `github.com/samber/lo` is no longer a dependency.
+- With the new fields and env unset, behaviour is the same as in v0.6.2 except the command/reply compression default, the duplicates clamp, UUIDv7 ids and the log levels.
+
 ## v0.6.2
 
 - Outbox claim v2 runs in an explicit transaction. Before, the claim `UPDATE` could finish and `ClaimTimeout` expire right after it: the statement was already committed, the rows stayed `IN_FLIGHT` with no receiver until `StallThreshold` (5m), and were then published with an expired signature. Now the claim is committed only when the rows were read and the claim context is still alive; otherwise the transaction rolls back and the rows stay `PENDING`.

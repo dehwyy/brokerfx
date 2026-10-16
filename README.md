@@ -277,6 +277,23 @@ drainer.Append(consumer1.Context(), consumer2.Context())
 drainer.Drain() // waits for all consumers to finish in-flight messages
 ```
 
+`DrainContext(ctx)` does the same within `ctx` (pass the fx `OnStop` context) and returns the context error when it runs out. With `MaxInFlight > 0` both wait for the handlers already started; with `MaxInFlight = 0` they return once the subscription is drained, as before.
+
+**Bounded dispatch and NAK backoff (v0.7.0).** Both are off by default; with the fields and env unset the consumer works as in v0.6.2.
+
+| Field | Env | Default | Effect |
+|---|---|---|---|
+| `Opts.MaxInFlight` | `BROKERFX_CONSUMER_MAX_IN_FLIGHT` | `0` (one goroutine per message, pull batch 50) | `K > 0`: at most `K` handlers run at once, pull batch is `K`, the receive callback blocks while all slots are busy (backpressure) |
+| `Opts.NakBackoff` | `BROKERFX_CONSUMER_NAK_BACKOFF` | off (plain `Nak`, immediate redelivery) | `NakWithDelay` by `NumDelivered` on handler error, before-middleware error and panic |
+
+- An explicit `Opts` value wins over env. A negative `MaxInFlight` or a non-positive `NakBackoff` step makes `New` return `ErrInvalidOpts`. An unparsable env value is logged as a warning and the default is used.
+- `BROKERFX_CONSUMER_NAK_BACKOFF`: `true` (or `1`, `on`, `yes`) uses `consumer.DefaultNakDelays` (`1s, 5s, 30s, 2m, 5m`, the same ladder as `batch.DefaultDelays`); a comma list such as `1s,2s,5s` sets the ladder; empty, `0`, `false`, `off` or `no` keeps it off. Delivery `n` gets step `n-1`, clamped to the last step; a message without metadata gets the first step.
+- With `K > 0` a message waiting for a slot sends `InProgress` from the moment it is received, and the heartbeat period is `min(5s, AckWait/3)` (at least 100ms), so a consumer with a short `AckWait` is kept alive too. Messages still in the nats.go client buffer (up to about `K/2`) get no heartbeat until the callback takes them: keep `AckWait` well above the time a message waits for a slot.
+- **Without `MaxDeliver` the NAK is eternal**: a message that always fails is redelivered forever, every 5m on the default ladder. Set `WithMaxDeliver` (and a DLQ) where that matters.
+- `MaxAckPending` stays the service's choice (`WithMaxAckPending`); keep it at or above `K`.
+
+**Consumer replicas (v0.7.0).** `consbuilder.WithReplicas(n)` sets the consumer replica count for `consumer.New` and `batch.New`; `0` (default) inherits the stream. The server only accepts the stream's own count on a workqueue or interest stream and at most the stream's count on a limits stream; any other value is reset to `0` with a warning before create/update (`consbuilder.FitReplicas(cfg, stream.Config())`), so the consumer still starts instead of failing or silently keeping the old durable.
+
 #### Consume-side idempotency
 
 `WithIdempotency` is an **opt-in** handler wrapper that dedups at consume time within
@@ -490,9 +507,9 @@ fx.Provide(
 | MaxAge | `12 hours` |
 | Retention | `WorkQueuePolicy` |
 | MaxMsgsPerSubject | `1,000` |
-| Compression | `S2Compression` |
+| Compression | `S2Compression` for event/result/DLQ roles; none for command/reply roles (v0.7.0) |
 | Replicas | `1` |
-| Duplicates | `15 minutes` |
+| Duplicates | `15 minutes`, clamped to `MaxAge` when `MaxAge` is shorter (v0.7.0) |
 
 **Stream role (NF-D-192).** `WithRole(streamoptsbuilder.RoleX)` selects the limit policy explicitly; there is no guessing from the stream name. `RoleEvent` (the default when `WithRole` is not called) gets `256 MiB` and `DiscardOld`. `RoleCommand`, `RoleResult` and `RoleReply` get `1 GiB` and `DiscardNew`, `RoleDLQ` gets `256 MiB` and `DiscardNew`: a full stream rejects the publish with an error and the outbox retries it, instead of silently dropping the oldest message. The last `WithRole` call wins. An unknown role makes `Err()` return `ErrUnknownRole`. Services that build a raw `jetstream.StreamConfig` take the same numbers from `streambuilder.LimitsFor(role)`.
 
@@ -506,6 +523,10 @@ fx.Provide(
 > `StallThreshold` (default 5m). The relay re-publishes a stalled IN_FLIGHT row with
 > `Nats-Msg-Id = row.ID`; with 2× headroom the re-publish always lands inside a live
 > dedup window, so the duplicate is suppressed. Keep `Duplicates < MaxAge`.
+
+**Compression by role (v0.7.0).** `RoleCommand` and `RoleReply` streams get no compression, `RoleEvent`, `RoleResult` and `RoleDLQ` keep S2: command and reply messages are small, short-lived and on the latency path. An explicit `WithCompression` wins in either call order. `streambuilder.CompressionFor(role)` gives the same value for raw configs. The server accepts the change on a live stream and applies it to new blocks only. Until every service that declares the same stream runs v0.7.0, the compression of that stream flips on each start of a service of the other version; this is harmless but shows up in `stream info`.
+
+**Duplicates window and MaxAge (v0.7.0).** The server rejects `Duplicates > MaxAge`. `Build()`, `jsstream.CreateOrUpdate` and `kv.Ensure` (against the bucket TTL) now clamp the window to `MaxAge` with a warning when `MaxAge > 0`, for the default and an explicit window alike (`streambuilder.FitDuplicates(cfg)`). Valid configs are not changed. The invariant above still has to hold: a short `MaxAge` gives a short dedup window.
 
 ---
 
@@ -525,7 +546,6 @@ CREATE TABLE outbox_events (
     created_at TIMESTAMPTZ,
     updated_at TIMESTAMPTZ
 );
-CREATE INDEX ON outbox_events (state);
 
 -- outbox_retries
 CREATE TABLE outbox_retries (
@@ -536,6 +556,10 @@ CREATE TABLE outbox_retries (
 );
 CREATE INDEX ON outbox_retries (event_id);
 ```
+
+Event ids are UUIDv7 since v0.7.0 (time-ordered, so inserts go to the right edge of the primary key index); the string format, `Nats-Msg-Id = id` and `processed_messages` are unchanged. `BROKERFX_OUTBOX_ID_V7=false` switches back to UUIDv4; the env is read once per process, and an unparsable value keeps v7 with a warning.
+
+Since v0.7.0 `AutoMigrate` no longer creates `idx_outbox_events_state` and `idx_outbox_events_created_at` (the claim uses `idx_outbox_events_state_updated_at` and `idx_outbox_events_pending_created_at`). `AutoMigrate` never drops an existing index, so existing databases keep them until the service drops them. After such a drop an image below v0.7.0 recreates them with a plain `CREATE INDEX` (a short write lock on `outbox_events`).
 
 #### Event lifecycle
 
@@ -930,6 +954,15 @@ fx.Options(
 | `CheckInterval` | `time.Duration` | `15s` | Safety-net rescan interval (catches missed watch events) |
 | `MaxHoldDuration` | `time.Duration` | `30s` | Hold timeout — timer fires after this if holder crashes |
 | `BucketTTL` | `time.Duration` | `48h` | KV bucket TTL for automatic GC |
+| `MarkerTTL` | `time.Duration` | `0` | v0.7.0. `> 0` (at least 1s): fired and cleared keys are purged with a delete marker that expires after `MarkerTTL`; `0` keeps the bucket's current setting |
+| `RescanInterval` | `time.Duration` | `0` | v0.7.0. `> 0`: full rescan on this period (and once after the initial watch values) instead of every `CheckInterval`, plus a local retry of a failed key removal |
+
+#### Marker TTL, rescan and rollback (v0.7.0)
+
+- **Why.** A fired or cleared timer used to leave a delete marker that lived for `BucketTTL` (48h), so `num_subjects` of the bucket grew with every timer ever set. With `MarkerTTL > 0` the bucket is created or updated with `LimitMarkerTTL` (`allow_msg_ttl`, `subject_delete_marker_ttl`) and keys are removed with `Purge(PurgeTTL(MarkerTTL), LastRevision(rev))`: the CAS guard and the exactly-once callback stay, and the marker goes away after `MarkerTTL`. Markers written before the switch stay until `BucketTTL` or a one-off `nats kv compact`.
+- **`MarkerTTL = 0` on a bucket that already has a marker TTL keeps it**: `New` reads the KV stream and passes the existing value, because the server cannot turn message TTL off.
+- **Rollback trap.** Once a bucket has `allow_msg_ttl`, any image below v0.7.0 (or any code that calls `CreateOrUpdateKeyValue` without `LimitMarkerTTL`) fails on start with `message TTL status can not be disabled` and crash-loops. To roll back below v0.7.0, delete the bucket first (`nats kv del <bucket>`), then start the old image. Live timers are then restored only by the service reconciler from its database, so **a reconciler is mandatory** for every service that enables `MarkerTTL`. Back up `nats kv info <bucket> --json` before enabling.
+- **`RescanInterval`.** With `0` the safety-net rescan runs every `CheckInterval` as before. With `> 0` it runs on that period and once right after the watcher delivered the initial values (overdue keys left by a stopped pod fire at start). In this mode an unexpected error while removing a fired key (anything but a lost CAS race) schedules a local retry after `CheckInterval` instead of waiting for the next rescan. If the removal actually succeeded and only the reply was lost, the retry sees a revision mismatch and the callback is not run; the reconciler covers that case.
 
 #### KV payload format
 
@@ -1050,7 +1083,7 @@ func main() {
 | MaxAge | `12 hours` |
 | Retention | `WorkQueuePolicy` |
 | MaxMsgsPerSubject | `1,000` |
-| Compression | `S2Compression` |
+| Compression | `S2Compression`; none for command/reply roles |
 | Replicas | `1` |
 
 ### Consumer Defaults
@@ -1061,7 +1094,10 @@ func main() {
 | AckWait | `30 seconds` |
 | DeliverPolicy | `DeliverAllPolicy` (`WithDeliverByStartSequence(n)` for a start sequence, 0 keeps `DeliverAll`) |
 | MaxAckPending | server default (1000); `WithMaxAckPending(n)`; the batch consumer sets `Pipeline × Max` when unset |
-| Pull: MaxMessages | `50` |
+| Pull: MaxMessages | `50`; `K` when `MaxInFlight = K > 0` |
+| MaxInFlight | `0` = unbounded (`BROKERFX_CONSUMER_MAX_IN_FLIGHT`) |
+| NakBackoff | off (`BROKERFX_CONSUMER_NAK_BACKOFF=true` or a list such as `1s,2s,5s`) |
+| Replicas | `0` = inherit the stream (`WithReplicas(n)`, reset to `0` when it does not fit) |
 | Pull: Heartbeat | `10 seconds` |
 | Batch: Max / Linger / Pipeline | `16` / `5ms` / `1` (`BROKERFX_BATCH_MAX`, `BROKERFX_BATCH_LINGER`, `BROKERFX_BATCH_PIPELINE`) |
 | Batch: retry ladder | `1s, 5s, 30s, 2m, 5m`, `MaxAttempts = len(Delays)+1` |
@@ -1080,6 +1116,7 @@ func main() {
 | Publish timeout | `30 seconds` per batch |
 | Batched (R1) | off (`Config.Batched` or `BROKERFX_OUTBOX_RELAY_BATCHED=true\|1`) |
 | Linger | `5ms` when batched |
+| Event id | UUIDv7 (`BROKERFX_OUTBOX_ID_V7=false` for UUIDv4) |
 
 ### TimedActor Defaults
 
@@ -1089,6 +1126,8 @@ func main() {
 | CheckInterval | `15 seconds` |
 | MaxHoldDuration | `30 seconds` |
 | BucketTTL | `48 hours` |
+| MarkerTTL | `0` (off, existing bucket setting kept) |
+| RescanInterval | `0` (rescan every `CheckInterval`) |
 
 ---
 

@@ -648,6 +648,11 @@ func (ta *TimedActor[T]) tryFireCallback(key string, rev uint64, metadata T) {
 			Str("key", key).
 			Uint64("rev", rev).
 			Msg("unexpected error during atomic delete, skipping callback")
+		ta.retryLater(
+			key,
+			rev,
+			metadata,
+		)
 		return
 	}
 

@@ -13,7 +13,10 @@ type Opts struct {
 }
 
 func New(opts Opts) (jetstream.JetStream, error) {
-	js, err := jetstream.New(opts.Conn)
+	js, err := jetstream.New(
+		opts.Conn,
+		publishOptions()...,
+	)
 	if err != nil {
 		return nil, err
 	}

@@ -91,6 +91,8 @@ type StreamOptsBuilder struct {
 	maxBytesExplicit bool
 	discardExplicit  bool
 	replicasExplicit bool
+
+	compressionExplicit bool
 }
 
 func bytesFromEnv(name string, fallback int64) (int64, error) {
@@ -204,6 +206,17 @@ func (b *StreamOptsBuilder) WithRole(role Role) *StreamOptsBuilder {
 	if !b.discardExplicit {
 		b.config.Discard = limits.Discard
 	}
+	if !b.compressionExplicit {
+		compression, err := CompressionFor(role)
+		if err != nil {
+			b.err = errors.Join(
+				b.err,
+				err,
+			)
+		} else {
+			b.config.Compression = compression
+		}
+	}
 
 	return b
 }
@@ -291,6 +304,7 @@ func (b *StreamOptsBuilder) WithCompression(
 	compression jetstream.StoreCompression,
 ) *StreamOptsBuilder {
 	b.config.Compression = compression
+	b.compressionExplicit = true
 	return b
 }
 

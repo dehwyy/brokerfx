@@ -225,7 +225,11 @@ func (ta *TimedActor[T]) Hold(ctx context.Context, key string) error {
 
 	// 2. CAS update: push expiration far into the future, preserving metadata.
 	//    This bumps the revision, invalidating ALL replicas' pending timers.
-	holdExpiry := time.Now().Add(ta.config.MaxHoldDuration)
+	holdExpiry := holdDeadline(
+		originalExpiry,
+		time.Now(),
+		ta.config.MaxHoldDuration,
+	)
 	holdPayload := payload[T]{
 		ExpiresAt: holdExpiry.UnixNano(),
 		Metadata:  originalPayload.Metadata,

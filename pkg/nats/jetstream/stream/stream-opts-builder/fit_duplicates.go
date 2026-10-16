@@ -23,7 +23,11 @@ func FitDuplicates(cfg jetstream.StreamConfig) jetstream.StreamConfig {
 			"max_age",
 			cfg.MaxAge,
 		).
-		Msg("stream duplicates window exceeds max age, clamping to max age")
+		Dur(
+			"outbox_max_stall_threshold",
+			cfg.MaxAge/2,
+		).
+		Msg("stream duplicates window exceeds max age, clamping to max age: an outbox publishing here needs BROKERFX_OUTBOX_STALL_THRESHOLD at most outbox_max_stall_threshold")
 	cfg.Duplicates = cfg.MaxAge
 
 	return cfg

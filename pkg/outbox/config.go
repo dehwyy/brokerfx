@@ -57,6 +57,7 @@ type Config struct {
 
 	PendingGaugeInterval time.Duration
 	CleanupBatch         int
+	LatestOnlyPrefixes   string
 }
 
 func DefaultConfig() Config {

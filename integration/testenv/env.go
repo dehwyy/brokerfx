@@ -212,3 +212,16 @@ func (p *FakeBatchProducer) BatchSizes() []int {
 	defer p.mu.Unlock()
 	return append([]int(nil), p.Batches...)
 }
+
+func (p *FakeBatchProducer) Payloads() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	payloads := make(
+		[]string,
+		len(p.Calls),
+	)
+	for i, call := range p.Calls {
+		payloads[i] = string(call.Payload)
+	}
+	return payloads
+}

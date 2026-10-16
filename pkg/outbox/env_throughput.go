@@ -12,7 +12,20 @@ import (
 const (
 	envPendingGaugeInterval = "BROKERFX_OUTBOX_PENDING_GAUGE_INTERVAL"
 	envCleanupBatch         = "BROKERFX_OUTBOX_CLEANUP_BATCH"
+	envLatestOnlyPrefixes   = "BROKERFX_OUTBOX_LATEST_ONLY_PREFIXES"
 )
+
+func splitList(value string) []string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+
+	return strings.Split(
+		value,
+		",",
+	)
+}
 
 func envNonNegativeInt(name string) (int, bool) {
 	value := strings.TrimSpace(os.Getenv(name))

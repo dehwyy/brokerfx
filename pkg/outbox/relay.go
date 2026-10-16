@@ -86,6 +86,8 @@ type OutboxRelay struct {
 
 	paused atomic.Bool
 
+	latestOnly []string
+
 	cleaning  atomic.Bool
 	cleanupWG sync.WaitGroup
 
@@ -137,6 +139,10 @@ func NewRelay(deps RelayDeps) *OutboxRelay {
 		done:           make(chan struct{}),
 	}
 	r.paused.Store(cfg.Paused || envPaused())
+	r.latestOnly = latestOnlyPrefixes(
+		splitList(cfg.LatestOnlyPrefixes),
+		splitList(os.Getenv(envLatestOnlyPrefixes)),
+	)
 
 	return r
 }
@@ -430,7 +436,7 @@ func (r *OutboxRelay) processBatch(ctx context.Context) {
 
 	r.logger.Debug().Int("count", len(events)).Msg("processing outbox batch")
 
-	kvLatestIndex := kvLatestIndexes(events)
+	kvLatestIndex := r.latestIndexes(events)
 
 	results := make(chan pubResult, len(events))
 
@@ -478,17 +484,6 @@ func (r *OutboxRelay) processBatch(ctx context.Context) {
 	}
 
 	r.settleOutcomes(ctx, db, caps, events, successIDs, failedOutcomes)
-}
-
-func kvLatestIndexes(events []relayEvent) map[string]int {
-	kvLatestIndex := make(map[string]int)
-	for i, ev := range events {
-		if strings.HasPrefix(ev.Topic, kvSubjectPrefix) {
-			kvLatestIndex[ev.Topic] = i
-		}
-	}
-
-	return kvLatestIndex
 }
 
 func (r *OutboxRelay) producerEvent(event relayEvent) (ProducerEvent, error) {

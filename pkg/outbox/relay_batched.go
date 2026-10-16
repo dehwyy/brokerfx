@@ -94,7 +94,7 @@ func (r *OutboxRelay) publishBatched(
 		[]pubResult,
 		len(events),
 	)
-	kvLatestIndex := kvLatestIndexes(events)
+	kvLatestIndex := r.latestIndexes(events)
 
 	pending := make(
 		[]int,

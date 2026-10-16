@@ -53,9 +53,11 @@ func (r *OutboxRelay) claimLegacy(db *gorm.DB, caps schemaCaps) ([]relayEvent, e
 			ids[i] = ev.ID
 		}
 
-		return tx.Model(&OutboxEvent{}).
-			Where("id IN ?", ids).
-			Update("state", StateInFlight).Error
+		return whereIDs(
+			tx.Model(&OutboxEvent{}),
+			caps.IDType,
+			ids,
+		).Update("state", StateInFlight).Error
 	})
 
 	return events, err

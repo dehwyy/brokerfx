@@ -15,11 +15,14 @@ var ErrSchemaOutdated = errors.New("outbox: schema missing v2 columns, run outbo
 type schemaCaps struct {
 	V2      bool
 	Retries bool
+	IDType  string
 }
 
 const v2ColumnsQuery = `select count(*) from information_schema.columns where table_schema = current_schema() and table_name = 'outbox_events' and column_name in ('attempts', 'last_error', 'next_attempt_at', 'headers')`
 
 const retriesTableQuery = `select to_regclass('outbox_retries')::text`
+
+const idTypeQuery = `select data_type from information_schema.columns where table_schema = current_schema() and table_name = 'outbox_events' and column_name = 'id'`
 
 func detectSchema(ctx context.Context, db *gorm.DB) (schemaCaps, error) {
 	var v2Columns int64
@@ -32,9 +35,15 @@ func detectSchema(ctx context.Context, db *gorm.DB) (schemaCaps, error) {
 		return schemaCaps{}, err
 	}
 
+	var idType sql.NullString
+	if err := db.WithContext(ctx).Raw(idTypeQuery).Scan(&idType).Error; err != nil {
+		return schemaCaps{}, err
+	}
+
 	return schemaCaps{
 		V2:      v2Columns == 4,
 		Retries: retriesTable.Valid,
+		IDType:  arrayElementType(idType.String),
 	}, nil
 }
 

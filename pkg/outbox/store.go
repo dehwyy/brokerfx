@@ -167,7 +167,15 @@ func (s *OutboxStore) RequeueParked(ctx context.Context, ids []string) (int64, e
 		Where("state = ?", StateParked)
 
 	if len(ids) > 0 {
-		query = query.Where("id IN ?", ids)
+		caps, err := s.ensureSchemaCaps(ctx)
+		if err != nil {
+			return 0, err
+		}
+		query = whereIDs(
+			query,
+			caps.IDType,
+			ids,
+		)
 	}
 
 	res := query.Updates(map[string]any{

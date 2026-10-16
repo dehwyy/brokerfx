@@ -521,7 +521,7 @@ func (r *OutboxRelay) settleOutcomes(
 
 		if caps.V2 {
 			r.revertFailedV2(db, events, failedOutcomes)
-		} else if err := db.Model(&OutboxEvent{}).Where("id IN ?", failedIDs).Update("state", StatePending).Error; err != nil {
+		} else if err := whereIDs(db.Model(&OutboxEvent{}), caps.IDType, failedIDs).Update("state", StatePending).Error; err != nil {
 			r.logger.Error().Err(err).Int("count", len(failedIDs)).Msg("failed to revert failed events to PENDING")
 		}
 
@@ -538,13 +538,13 @@ func (r *OutboxRelay) settleOutcomes(
 			Msg("marking published events as DONE (or deleting)")
 		switch r.config.Mode {
 		case ModeUpdateAfterSend:
-			if err := db.Model(&OutboxEvent{}).Where("id IN ?", successIDs).Update("state", StateDone).Error; err != nil {
+			if err := whereIDs(db.Model(&OutboxEvent{}), caps.IDType, successIDs).Update("state", StateDone).Error; err != nil {
 				r.logger.Error().Err(err).Int("count", len(successIDs)).Msg("failed to mark published events as DONE")
 			}
 		case ModeDeleteAfterSend:
 			fallthrough
 		default:
-			if err := db.Where("id IN ?", successIDs).Delete(&OutboxEvent{}).Error; err != nil {
+			if err := whereIDs(db, caps.IDType, successIDs).Delete(&OutboxEvent{}).Error; err != nil {
 				r.logger.Error().Err(err).Int("count", len(successIDs)).Msg("failed to delete published outbox events")
 			}
 		}

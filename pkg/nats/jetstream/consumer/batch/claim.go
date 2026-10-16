@@ -2,7 +2,6 @@ package batch
 
 import (
 	"sort"
-	"strings"
 
 	"github.com/dehwyy/brokerfx/pkg/nats/jetstream/consumer"
 	"github.com/nats-io/nats.go/jetstream"
@@ -50,29 +49,17 @@ var claimKeys = func(
 		},
 	)
 
-	var query strings.Builder
-	query.WriteString("INSERT INTO processed_messages (message_id, subject, processed_at) VALUES ")
-	args := make(
-		[]any,
-		0,
-		len(ordered)*2,
+	query, args, err := claimQuery(
+		conn,
+		ordered,
 	)
-	for i, row := range ordered {
-		if i > 0 {
-			query.WriteString(", ")
-		}
-		query.WriteString("(?, ?, NOW())")
-		args = append(
-			args,
-			row.MessageID,
-			row.Subject,
-		)
+	if err != nil {
+		return nil, err
 	}
-	query.WriteString(" ON CONFLICT (message_id) DO NOTHING RETURNING message_id")
 
 	var inserted []string
 	if err := conn.Raw(
-		query.String(),
+		query,
 		args...,
 	).Scan(&inserted).Error; err != nil {
 		return nil, err

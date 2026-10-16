@@ -610,7 +610,7 @@ func TestHeartbeatForAckWait(t *testing.T) {
 	}
 }
 
-func TestPullMaxMessagesFollowsInFlight(t *testing.T) {
+func TestPullMaxMessagesBoundedPullsOne(t *testing.T) {
 	if got := pullMaxMessages(0); got != defaultPullMaxMessages {
 		t.Fatalf(
 			"pullMaxMessages(0) = %d, want %d",
@@ -618,10 +618,11 @@ func TestPullMaxMessagesFollowsInFlight(t *testing.T) {
 			defaultPullMaxMessages,
 		)
 	}
-	if got := pullMaxMessages(8); got != 8 {
+	if got := pullMaxMessages(8); got != boundedPullMaxMessages {
 		t.Fatalf(
-			"pullMaxMessages(8) = %d, want 8",
+			"pullMaxMessages(8) = %d, want %d",
 			got,
+			boundedPullMaxMessages,
 		)
 	}
 }

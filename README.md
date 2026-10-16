@@ -283,12 +283,13 @@ drainer.Drain() // waits for all consumers to finish in-flight messages
 
 | Field | Env | Default | Effect |
 |---|---|---|---|
-| `Opts.MaxInFlight` | `BROKERFX_CONSUMER_MAX_IN_FLIGHT` | `0` (one goroutine per message, pull batch 50) | `K > 0`: at most `K` handlers run at once, pull batch is `K`, the receive callback blocks while all slots are busy (backpressure) |
+| `Opts.MaxInFlight` | `BROKERFX_CONSUMER_MAX_IN_FLIGHT` | `0` (one goroutine per message, pull batch 50) | `K > 0`: at most `K` handlers run at once, one message per pull request, the receive callback blocks while all slots are busy (backpressure) |
 | `Opts.NakBackoff` | `BROKERFX_CONSUMER_NAK_BACKOFF` | off (plain `Nak`, immediate redelivery) | `NakWithDelay` by `NumDelivered` on handler error, before-middleware error and panic |
 
 - An explicit `Opts` value wins over env. A negative `MaxInFlight` or a non-positive `NakBackoff` step makes `New` return `ErrInvalidOpts`. An unparsable env value is logged as a warning and the default is used.
 - `BROKERFX_CONSUMER_NAK_BACKOFF`: `true` (or `1`, `on`, `yes`) uses `consumer.DefaultNakDelays` (`1s, 5s, 30s, 2m, 5m`, the same ladder as `batch.DefaultDelays`); a comma list such as `1s,2s,5s` sets the ladder; empty, `0`, `false`, `off` or `no` keeps it off. Delivery `n` gets step `n-1`, clamped to the last step; a message without metadata gets the first step.
-- With `K > 0` a message waiting for a slot sends `InProgress` from the moment it is received, and the heartbeat period is `min(5s, AckWait/3)` (at least 100ms), so a consumer with a short `AckWait` is kept alive too. Messages still in the nats.go client buffer (up to about `K/2`) get no heartbeat until the callback takes them: keep `AckWait` well above the time a message waits for a slot.
+- With `K > 0` the consumer pulls one message per request, so the client never holds a message the callback has not seen: at most `K` handlers run and one message waits for a slot. The waiting message sends `InProgress` from the moment it is received, and the heartbeat period is `min(5s, AckWait/3)` (at least 100ms), so a handler longer than `AckWait` does not get a duplicate of the queued message. A larger pull batch would leave up to `batch - 1` messages in the nats.go buffer without a heartbeat while all slots are busy, and the server would redeliver them after `AckWait`.
+- The price is one pull round trip per message: one consumer on one pod receives at most about `1 / RTT` messages per second from the NATS server (embedded server on one host: about 7k/s with an empty handler, 13k/s at `K = 32` and 2ms handlers, the same as with batch `K`). `K = 0` keeps the batch of 50.
 - **Without `MaxDeliver` the NAK is eternal**: a message that always fails is redelivered forever, every 5m on the default ladder. Set `WithMaxDeliver` (and a DLQ) where that matters.
 - `MaxAckPending` stays the service's choice (`WithMaxAckPending`); keep it at or above `K`.
 
@@ -1094,7 +1095,7 @@ func main() {
 | AckWait | `30 seconds` |
 | DeliverPolicy | `DeliverAllPolicy` (`WithDeliverByStartSequence(n)` for a start sequence, 0 keeps `DeliverAll`) |
 | MaxAckPending | server default (1000); `WithMaxAckPending(n)`; the batch consumer sets `Pipeline × Max` when unset |
-| Pull: MaxMessages | `50`; `K` when `MaxInFlight = K > 0` |
+| Pull: MaxMessages | `50`; `1` when `MaxInFlight > 0` |
 | MaxInFlight | `0` = unbounded (`BROKERFX_CONSUMER_MAX_IN_FLIGHT`) |
 | NakBackoff | off (`BROKERFX_CONSUMER_NAK_BACKOFF=true` or a list such as `1s,2s,5s`) |
 | Replicas | `0` = inherit the stream (`WithReplicas(n)`, reset to `0` when it does not fit) |

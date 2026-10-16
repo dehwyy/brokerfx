@@ -1,10 +1,13 @@
 package consumer
 
-const defaultPullMaxMessages = 50
+const (
+	defaultPullMaxMessages = 50
+	boundedPullMaxMessages = 1
+)
 
 func pullMaxMessages(maxInFlight int) int {
 	if maxInFlight > 0 {
-		return maxInFlight
+		return boundedPullMaxMessages
 	}
 
 	return defaultPullMaxMessages

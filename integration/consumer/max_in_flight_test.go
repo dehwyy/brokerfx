@@ -288,3 +288,115 @@ func TestNakBackoffDelaysRedelivery(t *testing.T) {
 		1400*time.Millisecond,
 	)
 }
+
+func TestMaxInFlightQueuedMessagesAreNotRedelivered(t *testing.T) {
+	js, _ := testenv.EmbeddedNATS(t)
+	name := "INFLIGHTQ"
+	sink := newDeliveries()
+
+	var running, peak atomic.Int32
+	created := boundedConsumer(
+		t,
+		js,
+		name,
+		consumer.Opts{
+			MaxInFlight: 2,
+			HandlerFunc: func(_ context.Context, msg jetstream.Msg) error {
+				now := running.Add(1)
+				defer running.Add(-1)
+				for {
+					seen := peak.Load()
+					if now <= seen || peak.CompareAndSwap(
+						seen,
+						now,
+					) {
+						break
+					}
+				}
+				sink.add(
+					t,
+					msg,
+				)
+				time.Sleep(2500 * time.Millisecond)
+				return nil
+			},
+		},
+	)
+
+	const total = 6
+	for i := range total {
+		_, err := js.Publish(
+			context.Background(),
+			name+".m"+string(rune('a'+i)),
+			[]byte("p"),
+		)
+		require.NoError(
+			t,
+			err,
+		)
+	}
+
+	require.Eventually(
+		t,
+		func() bool {
+			return sink.total() >= total
+		},
+		30*time.Second,
+		50*time.Millisecond,
+	)
+	time.Sleep(3 * time.Second)
+
+	drainer := consumer.NewDrainer()
+	drainer.Append(*created)
+	ctx, cancel := context.WithTimeout(
+		context.Background(),
+		10*time.Second,
+	)
+	defer cancel()
+	require.NoError(
+		t,
+		drainer.DrainContext(ctx),
+	)
+
+	for i := range total {
+		numbers, _ := sink.of(name + ".m" + string(rune('a'+i)))
+		require.Equal(
+			t,
+			[]uint64{1},
+			numbers,
+		)
+	}
+	require.Equal(
+		t,
+		total,
+		sink.total(),
+	)
+	require.Equal(
+		t,
+		int32(2),
+		peak.Load(),
+	)
+
+	durable, err := js.Consumer(
+		context.Background(),
+		name,
+		name+"-c",
+	)
+	require.NoError(
+		t,
+		err,
+	)
+	state, err := durable.Info(context.Background())
+	require.NoError(
+		t,
+		err,
+	)
+	require.Zero(
+		t,
+		state.NumRedelivered,
+	)
+	require.Zero(
+		t,
+		state.NumAckPending,
+	)
+}

@@ -1,43 +1,35 @@
 package consumer
 
 import (
-	"sync"
+	"context"
 
-	"github.com/nats-io/nats.go/jetstream"
-	"github.com/samber/lo"
+	"github.com/rs/zerolog/log"
 )
 
 type Drainer struct {
-	consumerCtxs []jetstream.ConsumeContext
+	consumers []Consumer
 }
 
 func NewDrainer() *Drainer {
 	return &Drainer{
-		consumerCtxs: make([]jetstream.ConsumeContext, 0),
+		consumers: make(
+			[]Consumer,
+			0,
+		),
 	}
 }
 
 func (d *Drainer) Append(consumers ...Consumer) {
-	d.consumerCtxs = append(
-		d.consumerCtxs,
-		lo.Map(
-			consumers,
-			func(consumer Consumer, _ int) jetstream.ConsumeContext {
-				return consumer.consumeCtx
-			},
-		)...,
+	d.consumers = append(
+		d.consumers,
+		consumers...,
 	)
 }
 
 func (d *Drainer) Drain() {
-	var wg sync.WaitGroup
-	for _, consumerCtx := range d.consumerCtxs {
-		wg.Add(1)
-		go func(consumerCtx jetstream.ConsumeContext) {
-			defer wg.Done()
-			consumerCtx.Drain()
-			<-consumerCtx.Closed()
-		}(consumerCtx)
+	if err := d.drainAll(context.Background()); err != nil {
+		log.Warn().
+			Err(err).
+			Msg("jetstream consumers drain stopped early")
 	}
-	wg.Wait()
 }

@@ -8,7 +8,6 @@ require (
 	github.com/nats-io/nats.go v1.50.0
 	github.com/nats-io/nkeys v0.4.15
 	github.com/rs/zerolog v1.34.0
-	github.com/samber/lo v1.53.0
 	github.com/vmihailenco/msgpack/v5 v5.4.1
 	go.uber.org/fx v1.24.0
 	gorm.io/gorm v1.31.1

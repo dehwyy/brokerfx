@@ -24,6 +24,11 @@ type Opts struct {
 	// OnFatal is called when the pull subscription stops for good (the consumer was deleted),
 	// so the process can restart instead of idling without a consumer.
 	OnFatal func(error)
+
+	MaxInFlight int
+	NakBackoff  []time.Duration
+
+	inProgressEvery time.Duration
 }
 
 func consumeErrHandler(opts Opts) jetstream.ConsumeErrHandlerFunc {
@@ -40,9 +45,15 @@ func consumeErrHandler(opts Opts) jetstream.ConsumeErrHandlerFunc {
 
 type Consumer struct {
 	consumeCtx jetstream.ConsumeContext
+	inFlight   *pool
 }
 
 func New(opts Opts) (*Consumer, error) {
+	opts, err := resolveOpts(opts)
+	if err != nil {
+		return nil, err
+	}
+
 	cfg := opts.ConsumerOptsBuilder.Build()
 	consumer, err := opts.JetStream.CreateOrUpdateConsumer(
 		context.Background(),
@@ -65,11 +76,39 @@ func New(opts Opts) (*Consumer, error) {
 		consumer = existing
 	}
 
+	inFlight := newPool(opts.MaxInFlight)
+	if inFlight != nil {
+		opts.inProgressEvery = heartbeatForAckWait(ackWaitOf(consumer))
+		log.Info().
+			Str(
+				"stream",
+				opts.Stream.Name(),
+			).
+			Str(
+				"consumer",
+				cfg.Name,
+			).
+			Int(
+				"max_in_flight",
+				opts.MaxInFlight,
+			).
+			Dur(
+				"heartbeat",
+				opts.inProgressEvery,
+			).
+			Bool(
+				"nak_backoff",
+				len(opts.NakBackoff) > 0,
+			).
+			Msg("jetstream consumer dispatch bounded")
+	}
+
 	consumeCtx, err := consumer.Consume(
-		func(msg jetstream.Msg) {
-			go process(msg, opts)
-		},
-		jetstream.PullMaxMessages(50),
+		dispatch(
+			opts,
+			inFlight,
+		),
+		jetstream.PullMaxMessages(pullMaxMessages(opts.MaxInFlight)),
 		jetstream.PullHeartbeat(10*time.Second),
 		jetstream.ConsumeErrHandler(consumeErrHandler(opts)),
 	)
@@ -81,5 +120,6 @@ func New(opts Opts) (*Consumer, error) {
 
 	return &Consumer{
 		consumeCtx: consumeCtx,
+		inFlight:   inFlight,
 	}, nil
 }

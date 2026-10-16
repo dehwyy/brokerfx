@@ -20,7 +20,10 @@ func process(msg jetstream.Msg, opts Opts) {
 				Str("subject", msg.Subject()).
 				Any("panic", r).
 				Msg("consumer handler panic — NAK for redelivery")
-			if nakErr := msg.Nak(); nakErr != nil && !settled(nakErr) {
+			if nakErr := nak(
+				msg,
+				opts.NakBackoff,
+			); nakErr != nil && !settled(nakErr) {
 				log.Error().Err(nakErr).Msg("failed to NAK after panic")
 			}
 		}
@@ -32,15 +35,26 @@ func process(msg jetstream.Msg, opts Opts) {
 		ctx, err = mw(ctx, msg)
 		if err != nil {
 			log.Error().Err(err).Msg("error in before handler middleware — NAK for redelivery")
-			if nakErr := msg.Nak(); nakErr != nil && !settled(nakErr) {
+			if nakErr := nak(
+				msg,
+				opts.NakBackoff,
+			); nakErr != nil && !settled(nakErr) {
 				log.Error().Err(nakErr).Msg("failed to NAK after middleware error")
 			}
 			return
 		}
 	}
 
-	if err = runWithHeartbeat(ctx, msg, opts.HandlerFunc); err != nil {
-		nakErr := msg.Nak()
+	if err = runWithHeartbeatEvery(
+		ctx,
+		msg,
+		heartbeatEvery(opts),
+		opts.HandlerFunc,
+	); err != nil {
+		nakErr := nak(
+			msg,
+			opts.NakBackoff,
+		)
 		switch {
 		case nakErr == nil:
 			log.Error().Err(err).Str("subject", msg.Subject()).Msg("handler failed — NAK for redelivery")

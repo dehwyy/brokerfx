@@ -1,11 +1,5 @@
 package batch
 
-import "time"
+import "github.com/dehwyy/brokerfx/pkg/nats/jetstream/consumer"
 
-var DefaultDelays = []time.Duration{
-	time.Second,
-	5 * time.Second,
-	30 * time.Second,
-	2 * time.Minute,
-	5 * time.Minute,
-}
+var DefaultDelays = consumer.DefaultNakDelays

@@ -7,6 +7,7 @@ import (
 	"net/textproto"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -84,6 +85,9 @@ type OutboxRelay struct {
 	detectSchemaFn detectFunc
 
 	paused atomic.Bool
+
+	cleaning  atomic.Bool
+	cleanupWG sync.WaitGroup
 
 	lastReclaim time.Time
 
@@ -205,6 +209,7 @@ func (r *OutboxRelay) Run(ctx context.Context) {
 		case <-ctx.Done():
 			r.logger.Info().Msg("outbox relay stopping, processing final batch")
 			r.process(ctx)
+			r.cleanupWG.Wait()
 			r.logger.Info().Msg("outbox relay stopped")
 			return
 		case <-r.store.WakeupChan():
@@ -213,7 +218,7 @@ func (r *OutboxRelay) Run(ctx context.Context) {
 		case <-ticker.C:
 			r.process(ctx)
 		case <-cleanupChan:
-			r.cleanupDone()
+			r.cleanup(ctx)
 		case <-statsChan:
 			r.sendStats(ctx)
 		case <-pendingChan:

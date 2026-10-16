@@ -56,6 +56,7 @@ type Config struct {
 	StallReclaimInterval time.Duration
 
 	PendingGaugeInterval time.Duration
+	CleanupBatch         int
 }
 
 func DefaultConfig() Config {

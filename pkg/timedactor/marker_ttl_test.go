@@ -59,6 +59,14 @@ func TestNewValidatesMarkerTTLAndRescan(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			name: "rescan without check interval is rejected",
+			config: Config{
+				BucketName:     "b",
+				RescanInterval: time.Minute,
+			},
+			wantErr: true,
+		},
+		{
 			name: "negative rescan is rejected",
 			config: Config{
 				BucketName:     "b",

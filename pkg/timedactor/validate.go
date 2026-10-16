@@ -28,5 +28,13 @@ func (c Config) validate() error {
 		)
 	}
 
+	if c.RescanInterval > 0 && c.CheckInterval <= 0 {
+		return fmt.Errorf(
+			"%w: CheckInterval %s, want positive when RescanInterval is set",
+			ErrInvalidConfig,
+			c.CheckInterval,
+		)
+	}
+
 	return nil
 }

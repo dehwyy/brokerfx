@@ -278,7 +278,7 @@ func (ta *TimedActor[T]) Hold(ctx context.Context, key string) error {
 		if current.Revision() != holdRev {
 			// Revision changed during hold — Add() or Clear() was called.
 			// The new value takes over seamlessly. No restore needed.
-			ta.logger.Info().
+			ta.logger.Debug().
 				Str("key", key).
 				Uint64("hold_rev", holdRev).
 				Uint64("current_rev", current.Revision()).
@@ -303,7 +303,7 @@ func (ta *TimedActor[T]) Hold(ctx context.Context, key string) error {
 			return
 		}
 
-		ta.logger.Info().
+		ta.logger.Debug().
 			Str("key", key).
 			Time("original_expiry", originalExpiry).
 			Msg("hold released, original expiry restored")

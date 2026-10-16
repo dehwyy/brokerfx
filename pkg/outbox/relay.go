@@ -559,7 +559,7 @@ func (r *OutboxRelay) settleOutcomes(
 		}
 	}
 
-	r.logger.Info().
+	r.logger.Debug().
 		Int("published", len(successIDs)).
 		Int("failed", len(failedOutcomes)).
 		Msg("outbox batch processed")

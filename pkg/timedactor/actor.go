@@ -85,6 +85,10 @@ func New[T any](deps Deps) (*TimedActor[T], error) {
 		cfg = DefaultConfig()
 	}
 
+	if err := cfg.validate(); err != nil {
+		return nil, err
+	}
+
 	ctx := context.Background()
 
 	// CreateOrUpdateKeyValue is idempotent: creates the bucket if it doesn't
@@ -104,12 +108,25 @@ func New[T any](deps Deps) (*TimedActor[T], error) {
 		replicas = resolved
 	}
 
-	kv, err := deps.JS.CreateOrUpdateKeyValue(ctx, jetstream.KeyValueConfig{
-		Bucket:   cfg.BucketName,
-		Storage:  storage,
-		TTL:      cfg.BucketTTL,
-		Replicas: replicas,
-	})
+	markerTTL, err := bucketMarkerTTL(
+		ctx,
+		deps.JS,
+		cfg,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	kv, err := deps.JS.CreateOrUpdateKeyValue(
+		ctx,
+		jetstream.KeyValueConfig{
+			Bucket:         cfg.BucketName,
+			Storage:        storage,
+			TTL:            cfg.BucketTTL,
+			Replicas:       replicas,
+			LimitMarkerTTL: markerTTL,
+		},
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -299,7 +316,10 @@ func (ta *TimedActor[T]) Hold(ctx context.Context, key string) error {
 // the scheduled timeout. The in-memory timer (if any) will be cleaned up
 // by the watcher goroutine when it receives the delete marker.
 func (ta *TimedActor[T]) Clear(ctx context.Context, key string) error {
-	err := ta.kv.Delete(ctx, key)
+	err := ta.removeKey(
+		ctx,
+		key,
+	)
 	if err != nil {
 		// Key might already be deleted; treat as non-fatal.
 		if errors.Is(err, jetstream.ErrKeyNotFound) {
@@ -468,7 +488,7 @@ func (ta *TimedActor[T]) runWatcher(eventKey string) bool {
 
 	// Safety-net ticker: periodically re-scan all tracked timers to catch
 	// any keys that might have been missed due to reconnection or race.
-	ticker := time.NewTicker(ta.config.CheckInterval)
+	ticker := time.NewTicker(ta.rescanEvery())
 	defer ticker.Stop()
 
 	for {
@@ -484,6 +504,9 @@ func (ta *TimedActor[T]) runWatcher(eventKey string) bool {
 			}
 
 			if entry == nil {
+				if ta.config.RescanInterval > 0 {
+					ta.rescanOverdueTimers()
+				}
 				continue
 			}
 
@@ -603,7 +626,11 @@ func (ta *TimedActor[T]) tryFireCallback(key string, rev uint64, metadata T) {
 	// Attempt the atomic, revision-guarded delete.
 	// If the key's current revision no longer matches `rev`, another replica
 	// has already claimed this timer — we silently skip.
-	err := ta.kv.Delete(ta.ctx, key, jetstream.LastRevision(rev))
+	err := ta.removeKey(
+		ta.ctx,
+		key,
+		jetstream.LastRevision(rev),
+	)
 	if err != nil {
 		// ErrKeyWrongLastRevision (or key already deleted) means another pod
 		// won the race. This is the expected path for losing replicas.

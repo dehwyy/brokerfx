@@ -34,6 +34,10 @@ type Config struct {
 	FileStorage bool
 
 	Replicas int
+
+	MarkerTTL time.Duration
+
+	RescanInterval time.Duration
 }
 
 // DefaultConfig returns a Config with sensible defaults.

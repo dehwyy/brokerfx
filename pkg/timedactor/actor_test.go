@@ -22,10 +22,21 @@ import (
 type mockJetStream struct {
 	jetstream.JetStream
 	createOrUpdateKVFn func(ctx context.Context, cfg jetstream.KeyValueConfig) (jetstream.KeyValue, error)
+	streamFn           func(ctx context.Context, name string) (jetstream.Stream, error)
 }
 
 func (m *mockJetStream) CreateOrUpdateKeyValue(ctx context.Context, cfg jetstream.KeyValueConfig) (jetstream.KeyValue, error) {
 	return m.createOrUpdateKVFn(ctx, cfg)
+}
+
+func (m *mockJetStream) Stream(ctx context.Context, name string) (jetstream.Stream, error) {
+	if m.streamFn == nil {
+		return nil, jetstream.ErrStreamNotFound
+	}
+	return m.streamFn(
+		ctx,
+		name,
+	)
 }
 
 // mockKV satisfies jetstream.KeyValue. Each method delegates to its function
@@ -38,6 +49,15 @@ type mockKV struct {
 	deleteFn   func(ctx context.Context, key string, opts ...jetstream.KVDeleteOpt) error
 	watchFn    func(ctx context.Context, keys string, opts ...jetstream.WatchOpt) (jetstream.KeyWatcher, error)
 	listKeysFn func(ctx context.Context, opts ...jetstream.WatchOpt) (jetstream.KeyLister, error)
+	purgeFn    func(ctx context.Context, key string, opts ...jetstream.KVDeleteOpt) error
+}
+
+func (m *mockKV) Purge(ctx context.Context, key string, opts ...jetstream.KVDeleteOpt) error {
+	return m.purgeFn(
+		ctx,
+		key,
+		opts...,
+	)
 }
 
 func (m *mockKV) Put(ctx context.Context, key string, val []byte) (uint64, error) {

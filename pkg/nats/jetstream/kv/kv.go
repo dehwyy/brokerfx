@@ -81,6 +81,7 @@ func Ensure(ctx context.Context, js jetstream.JetStream, opts Opts) (jetstream.K
 
 		cfg := info.Config
 		cfg.Duplicates = duplicates
+		cfg = streamoptsbuilder.FitDuplicates(cfg)
 		if _, err := js.UpdateStream(ctx, cfg); err != nil {
 			return nil, err
 		}
@@ -99,6 +100,7 @@ func Ensure(ctx context.Context, js jetstream.JetStream, opts Opts) (jetstream.K
 	cfg.MaxBytes = maxBytes
 	cfg.Storage = opts.Storage
 	cfg.Duplicates = duplicates
+	cfg = streamoptsbuilder.FitDuplicates(cfg)
 
 	if cfg.MaxMsgsPerSubject != info.Config.MaxMsgsPerSubject ||
 		cfg.Replicas != info.Config.Replicas ||

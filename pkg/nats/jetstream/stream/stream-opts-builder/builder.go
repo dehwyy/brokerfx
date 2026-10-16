@@ -243,7 +243,7 @@ func (b *StreamOptsBuilder) Build() jetstream.StreamConfig {
 		panic("subjects are required")
 	}
 
-	return b.config
+	return FitDuplicates(b.config)
 }
 
 // REQUIRED

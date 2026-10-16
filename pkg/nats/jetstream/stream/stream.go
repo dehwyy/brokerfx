@@ -40,6 +40,7 @@ func CreateOrUpdate(
 	js jetstream.JetStream,
 	cfg jetstream.StreamConfig,
 ) (jetstream.Stream, error) {
+	cfg = streamoptsbuilder.FitDuplicates(cfg)
 	if cfg.Replicas < 1 {
 		replicas, err := streamoptsbuilder.ReplicasFor(streamoptsbuilder.ScopeEvent)
 		if err != nil {

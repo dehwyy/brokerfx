@@ -276,6 +276,103 @@ func TestDispatchWaitingMessageKeepsHeartbeat(t *testing.T) {
 	}
 }
 
+func TestDrainNaksMessageWaitingForSlot(t *testing.T) {
+	restore := inProgressIntervalForTest(10 * time.Millisecond)
+	defer restore()
+
+	inFlight := newPool(1)
+	release := make(chan struct{})
+	first := &flightMsg{
+		delivered: 1,
+	}
+	second := &flightMsg{
+		delivered: 1,
+	}
+	var secondStarted atomic.Bool
+	opts := Opts{
+		HandlerFunc: func(_ context.Context, msg jetstream.Msg) error {
+			if msg == first {
+				<-release
+				return nil
+			}
+			secondStarted.Store(true)
+			return nil
+		},
+	}
+	handle := dispatch(
+		opts,
+		inFlight,
+	)
+
+	handle(first)
+	waiting := make(chan struct{})
+	go func() {
+		defer close(waiting)
+		handle(second)
+	}()
+	waitFor(
+		t,
+		func() bool {
+			return second.inProgress.Load() >= 1
+		},
+	)
+
+	drainer := NewDrainer()
+	drainer.Append(Consumer{
+		consumeCtx: newFakeConsumeCtx(),
+		inFlight:   inFlight,
+	})
+	drained := make(
+		chan error,
+		1,
+	)
+	go func() {
+		drained <- drainer.DrainContext(context.Background())
+	}()
+
+	<-waiting
+	calls, _ := second.snapshot()
+	if !slices.Equal(
+		calls,
+		[]string{"nak"},
+	) {
+		t.Fatalf(
+			"waiting msg calls = %v, want [nak]",
+			calls,
+		)
+	}
+	beats := second.inProgress.Load()
+	select {
+	case err := <-drained:
+		t.Fatalf(
+			"drain returned %v while the first handler was running",
+			err,
+		)
+	case <-time.After(50 * time.Millisecond):
+	}
+	if second.inProgress.Load() != beats {
+		t.Fatal("waiting msg kept its heartbeat after the NAK")
+	}
+
+	close(release)
+	if err := <-drained; err != nil {
+		t.Fatal(err)
+	}
+	if secondStarted.Load() {
+		t.Fatal("waiting msg handler started after the consumer stopped")
+	}
+	firstCalls, _ := first.snapshot()
+	if !slices.Equal(
+		firstCalls,
+		[]string{"ack"},
+	) {
+		t.Fatalf(
+			"first msg calls = %v, want [ack]",
+			firstCalls,
+		)
+	}
+}
+
 func TestProcessNakBackoffGrowsWithDelivery(t *testing.T) {
 	cases := []struct {
 		delivered uint64
@@ -636,7 +733,9 @@ func TestDrainContextWaitsForInFlight(t *testing.T) {
 		inFlight:   inFlight,
 	})
 
-	inFlight.acquire()
+	if !inFlight.acquire() {
+		t.Fatal("acquire failed on an idle pool")
+	}
 	released := make(
 		chan time.Time,
 		1,
@@ -669,7 +768,9 @@ func TestDrainContextStopsAtDeadline(t *testing.T) {
 		consumeCtx: newFakeConsumeCtx(),
 		inFlight:   inFlight,
 	})
-	inFlight.acquire()
+	if !inFlight.acquire() {
+		t.Fatal("acquire failed on an idle pool")
+	}
 	defer inFlight.release()
 
 	ctx, cancel := context.WithTimeout(

@@ -277,7 +277,7 @@ drainer.Append(consumer1.Context(), consumer2.Context())
 drainer.Drain() // waits for all consumers to finish in-flight messages
 ```
 
-`DrainContext(ctx)` does the same within `ctx` (pass the fx `OnStop` context) and returns the context error when it runs out. With `MaxInFlight > 0` both wait for the handlers already started; with `MaxInFlight = 0` they return once the subscription is drained, as before.
+`DrainContext(ctx)` does the same within `ctx` (pass the fx `OnStop` context) and returns the context error when it runs out. With `MaxInFlight > 0` both wait until all `K` slots are free, so a handler that took a slot while the subscription was closing is waited for too; a message still waiting for a slot at that point is not handled and gets `Nak` (immediate redelivery, another replica takes it). With `MaxInFlight = 0` they return once the subscription is drained, as before.
 
 **Bounded dispatch and NAK backoff (v0.7.0).** Both are off by default; with the fields and env unset the consumer works as in v0.6.2.
 

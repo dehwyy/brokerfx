@@ -6,8 +6,11 @@ import (
 )
 
 type pool struct {
-	slots chan struct{}
-	busy  sync.WaitGroup
+	slots   chan struct{}
+	stopped chan struct{}
+	stop    sync.Once
+	drain   sync.Mutex
+	held    int
 }
 
 func newPool(size int) *pool {
@@ -20,18 +23,22 @@ func newPool(size int) *pool {
 			chan struct{},
 			size,
 		),
+		stopped: make(chan struct{}),
 	}
 }
 
-func (p *pool) acquire() {
-	p.slots <- struct{}{}
-	p.busy.Add(1)
+func (p *pool) acquire() bool {
+	select {
+	case p.slots <- struct{}{}:
+		return true
+	case <-p.stopped:
+		return false
+	}
 }
 
 func (p *pool) tryAcquire() bool {
 	select {
 	case p.slots <- struct{}{}:
-		p.busy.Add(1)
 		return true
 	default:
 		return false
@@ -39,7 +46,6 @@ func (p *pool) tryAcquire() bool {
 }
 
 func (p *pool) release() {
-	p.busy.Done()
 	<-p.slots
 }
 
@@ -48,16 +54,20 @@ func (p *pool) wait(ctx context.Context) error {
 		return nil
 	}
 
-	idle := make(chan struct{})
-	go func() {
-		p.busy.Wait()
-		close(idle)
-	}()
+	p.stop.Do(func() {
+		close(p.stopped)
+	})
 
-	select {
-	case <-idle:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
+	p.drain.Lock()
+	defer p.drain.Unlock()
+	for p.held < cap(p.slots) {
+		select {
+		case p.slots <- struct{}{}:
+			p.held++
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	}
+
+	return nil
 }

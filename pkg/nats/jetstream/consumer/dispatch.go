@@ -18,13 +18,12 @@ func dispatch(
 	}
 
 	return func(msg jetstream.Msg) {
-		if !inFlight.tryAcquire() {
-			stop := keepAlive(
-				msg,
-				heartbeatEvery(opts),
-			)
-			inFlight.acquire()
-			stop()
+		if !inFlight.tryAcquire() && !waitForSlot(
+			msg,
+			opts,
+			inFlight,
+		) {
+			return
 		}
 
 		go func() {

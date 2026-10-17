@@ -24,4 +24,5 @@ type Opts struct {
 	OnPoison            PoisonFunc
 	OnFatal             func(error)
 	Observer            Observer
+	StrictUpdate        bool
 }

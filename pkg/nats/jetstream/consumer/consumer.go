@@ -25,8 +25,9 @@ type Opts struct {
 	// so the process can restart instead of idling without a consumer.
 	OnFatal func(error)
 
-	MaxInFlight int
-	NakBackoff  []time.Duration
+	MaxInFlight  int
+	NakBackoff   []time.Duration
+	StrictUpdate bool
 
 	inProgressEvery time.Duration
 }
@@ -58,25 +59,12 @@ func New(opts Opts) (*Consumer, error) {
 		opts.ConsumerOptsBuilder.Build(),
 		opts.Stream.Config(),
 	)
-	consumer, err := opts.JetStream.CreateOrUpdateConsumer(
-		context.Background(),
-		opts.Stream.Name(),
+	consumer, err := bindDurable(
+		opts,
 		cfg,
 	)
 	if err != nil {
-		name := cfg.Name
-		if name == "" {
-			name = cfg.Durable
-		}
-		existing, getErr := opts.JetStream.Consumer(
-			context.Background(),
-			opts.Stream.Name(),
-			name,
-		)
-		if getErr != nil {
-			return nil, err
-		}
-		consumer = existing
+		return nil, err
 	}
 
 	inFlight := newPool(opts.MaxInFlight)

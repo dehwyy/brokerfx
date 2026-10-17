@@ -2,11 +2,10 @@ package batch
 
 import (
 	"context"
-	"errors"
 	"fmt"
 
 	consumeroptsbuilder "github.com/dehwyy/brokerfx/pkg/nats/jetstream/consumer/consumer-opts-builder"
-	"github.com/nats-io/nats.go/jetstream"
+	"github.com/dehwyy/brokerfx/pkg/nats/jetstream/consumer/internal/durable"
 	"github.com/rs/zerolog/log"
 )
 
@@ -34,11 +33,15 @@ func New(opts Opts) (*Consumer, error) {
 		return nil, err
 	}
 
-	bound, err := bindConsumer(
+	bound, err := durable.Bind(
 		context.Background(),
-		opts.JetStream,
-		opts.Stream.Name(),
-		cfg,
+		&durable.BindRequest{
+			JetStream: opts.JetStream,
+			Stream:    opts.Stream.Name(),
+			Config:    cfg,
+			Strict:    durable.Strict(opts.StrictUpdate),
+			Rejected:  "batch consumer config update rejected, using existing durable as is",
+		},
 	)
 	if err != nil {
 		return nil, err
@@ -77,7 +80,7 @@ func New(opts Opts) (*Consumer, error) {
 		).
 		Str(
 			"consumer",
-			consumerName(actual),
+			durable.Name(actual),
 		).
 		Int(
 			"max",
@@ -122,102 +125,4 @@ func New(opts Opts) (*Consumer, error) {
 		Msg("batch consumer started")
 
 	return c, nil
-}
-
-func bindConsumer(
-	ctx context.Context,
-	js jetstream.JetStream,
-	stream string,
-	cfg jetstream.ConsumerConfig,
-) (jetstream.Consumer, error) {
-	name := consumerName(cfg)
-	if name == "" {
-		return js.CreateConsumer(
-			ctx,
-			stream,
-			cfg,
-		)
-	}
-
-	existing, err := js.Consumer(
-		ctx,
-		stream,
-		name,
-	)
-	switch {
-	case err == nil:
-		return updateKeepingStart(
-			ctx,
-			js,
-			stream,
-			cfg,
-			existing,
-		), nil
-	case !errors.Is(
-		err,
-		jetstream.ErrConsumerNotFound,
-	):
-		return nil, err
-	}
-
-	created, err := js.CreateConsumer(
-		ctx,
-		stream,
-		cfg,
-	)
-	if errors.Is(
-		err,
-		jetstream.ErrConsumerExists,
-	) {
-		return js.Consumer(
-			ctx,
-			stream,
-			name,
-		)
-	}
-
-	return created, err
-}
-
-func updateKeepingStart(
-	ctx context.Context,
-	js jetstream.JetStream,
-	stream string,
-	cfg jetstream.ConsumerConfig,
-	existing jetstream.Consumer,
-) jetstream.Consumer {
-	current := existing.CachedInfo().Config
-	cfg.DeliverPolicy = current.DeliverPolicy
-	cfg.OptStartSeq = current.OptStartSeq
-	cfg.OptStartTime = current.OptStartTime
-
-	updated, err := js.UpdateConsumer(
-		ctx,
-		stream,
-		cfg,
-	)
-	if err != nil {
-		log.Warn().
-			Err(err).
-			Str(
-				"stream",
-				stream,
-			).
-			Str(
-				"consumer",
-				consumerName(cfg),
-			).
-			Msg("batch consumer config update rejected, using existing durable as is")
-		return existing
-	}
-
-	return updated
-}
-
-func consumerName(cfg jetstream.ConsumerConfig) string {
-	if cfg.Durable != "" {
-		return cfg.Durable
-	}
-
-	return cfg.Name
 }

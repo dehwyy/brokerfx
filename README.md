@@ -303,6 +303,14 @@ drainer.Drain() // waits for all consumers to finish in-flight messages
 
 **Consumer replicas (v0.7.0).** `consbuilder.WithReplicas(n)` sets the consumer replica count for `consumer.New` and `batch.New`; `0` (default) inherits the stream. The server only accepts the stream's own count on a workqueue or interest stream and at most the stream's count on a limits stream; any other value is reset to `0` with a warning before create/update (`consbuilder.FitReplicas(cfg, stream.Config())`), so the consumer still starts instead of failing or silently keeping the old durable.
 
+**Strict durable update (v0.9.0).** `consumer.Opts.StrictUpdate` and `batch.Opts.StrictUpdate` are off by default. Without them an update the server rejects (an immutable field such as `AckPolicy` or `MaxWaiting` changed: code 500, err_code 10012) is logged as a warning and the existing durable is used as is, so the pod runs with a config it did not ask for; the per-message consumer now logs that warning too, like batch.
+
+- `StrictUpdate: true` makes `New` fail with `consumer.ErrUpdateRejected`; the error names the stream, the durable, the server code, err_code and description.
+- Transient errors (timeout, no responders, reconnecting, disconnected, API code 503, a create race) are retried with backoff from 250ms to 2s for 30s; after that `New` returns `consumer.ErrBindTransient` wrapping the last error.
+- After binding, the durable's filters (`FilterSubject` and `FilterSubjects` as one sorted set) are compared with the wanted set; a difference fails with `consumer.ErrFilterMismatch` naming both.
+- An update keeps the durable's `DeliverPolicy`, `OptStartSeq` and `OptStartTime` on both paths, so a changed start option does not trigger a rejection.
+- `BROKERFX_CONSUMER_STRICT_UPDATE=false` (or `0`, `off`, `no`) turns strict off for the process as a rollback switch; the env cannot turn it on. An unknown value logs a warning and keeps the code value.
+
 #### Consume-side idempotency
 
 `WithIdempotency` is an **opt-in** handler wrapper that dedups at consume time within
@@ -1155,6 +1163,7 @@ func main() {
 | MaxInFlight | `0` = unbounded (`BROKERFX_CONSUMER_MAX_IN_FLIGHT`) |
 | NakBackoff | off (`BROKERFX_CONSUMER_NAK_BACKOFF=true` or a list such as `1s,2s,5s`) |
 | Replicas | `0` = inherit the stream (`WithReplicas(n)`, reset to `0` when it does not fit) |
+| StrictUpdate | off; `true` fails `New` on a rejected update (`BROKERFX_CONSUMER_STRICT_UPDATE=false` turns it off) |
 | Pull: Heartbeat | `10 seconds` |
 | Batch: Max / Linger / Pipeline | `16` / `5ms` / `1` (`BROKERFX_BATCH_MAX`, `BROKERFX_BATCH_LINGER`, `BROKERFX_BATCH_PIPELINE`) |
 | Batch: MinBatch / LingerMax | off (`BROKERFX_BATCH_MIN`, `BROKERFX_BATCH_LINGER_MAX`) |

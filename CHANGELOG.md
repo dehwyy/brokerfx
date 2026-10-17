@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.9.0
+
+- consumer, batch: `Opts.StrictUpdate` (off): a durable update the server rejects fails `New` with `consumer.ErrUpdateRejected` naming the stream, durable, code and err_code instead of a warning and the old config; transient errors are retried for 30s (`ErrBindTransient` after that); the bound filter set is checked (`ErrFilterMismatch`). `BROKERFX_CONSUMER_STRICT_UPDATE=false` turns it off. Without strict the per-message consumer logs the rejection like batch. (MQ-04)
+
 ## v0.8.0
 
 - batch: `Opts.MinBatch` / `BROKERFX_BATCH_MIN` and `Opts.LingerMax` / `BROKERFX_BATCH_LINGER_MAX` (off): after the first linger fetch the consumer keeps fetching until `MinBatch`, a full batch or `LingerMax`. `MinBatch > Max` and `LingerMax >= AckWait/4` fail `New`; `MinBatch` without `LingerMax` is off with a warning. (ARCH-04)

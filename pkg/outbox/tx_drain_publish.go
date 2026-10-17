@@ -54,6 +54,7 @@ func (r *OutboxRelay) publishWithin(
 		return errs
 	}
 
+	producer := r.producer
 	results := make(
 		chan indexedErr,
 		len(events),
@@ -62,7 +63,7 @@ func (r *OutboxRelay) publishWithin(
 		go func() {
 			results <- indexedErr{
 				index: i,
-				err: r.producer.Produce(
+				err: producer.Produce(
 					pubCtx,
 					event,
 				),

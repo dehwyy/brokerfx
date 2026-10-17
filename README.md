@@ -400,7 +400,7 @@ func RunProjection(lc fx.Lifecycle, js jetstream.JetStream, st *stream.Stream, t
 - Verdicts: `batch.Ack()`, `batch.Nak(err)`, `batch.NakDelay(d, err)`, `batch.Term(err)`.
 - Verdicts are applied only after the handler returns, in message order. A handler that settled a message itself (`ErrMsgAlreadyAckd` afterwards) is fine.
 - The handler context is `context.WithoutCancel` of the loop context: `Drain` never interrupts a batch that has started.
-- A panicking handler does not lose the batch: every unsettled message is run through the handler again on its own (`[]Msg{m}`) under `recover`; a message that panics again gets `Nak(ErrHandlerPanic)` and follows the retry policy below.
+- A panicking handler does not lose the batch: every unsettled message is run through the handler again on its own (`[]Msg{m}`) under `recover`; a message that panics again gets `Nak(ErrHandlerPanic)` and follows the retry policy below. Inside `InTx` a panic of `Apply` or `ApplyResults` is recovered in the transaction, rolls it back and is an `ErrHandlerPanic` error of the attempt, so the batch is bisected as for any other error and `OrderKey` holds the tail of the panicking message.
 - One heartbeat goroutine per batch sends `InProgress` to every unsettled message every `AckWait/2` (15 s if `AckWait` is 0), so a batch may take longer than `AckWait` without redelivery.
 - Order by key is guaranteed only inside a batch, and between batches only with `Pipeline = 1`. With `Pipeline > 1` or retries, use a version guard in the UPSERT.
 

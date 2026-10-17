@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go/jetstream"
+	"github.com/rs/zerolog/log"
 )
 
 func (h *inTx) bisect(
@@ -121,19 +122,15 @@ func (h *inTx) attempt(
 				selected[i] = msgs[index]
 			}
 
-			if h.applyResults == nil {
-				return h.apply(
-					ctx,
-					selected,
-				)
-			}
-
-			applied, err := h.applyResults(
+			applied, err := h.run(
 				ctx,
 				selected,
 			)
 			if err != nil {
 				return err
+			}
+			if h.applyResults == nil {
+				return nil
 			}
 			if len(applied) != len(selected) {
 				return fmt.Errorf(
@@ -185,6 +182,44 @@ func (h *inTx) attempt(
 	}
 
 	return outcome, nil
+}
+
+func (h *inTx) run(
+	ctx context.Context,
+	selected []jetstream.Msg,
+) (applied []Result, err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			log.Error().
+				Any(
+					"panic",
+					recovered,
+				).
+				Int(
+					"batch",
+					len(selected),
+				).
+				Msg("batch apply panic, transaction rolled back")
+			applied = nil
+			err = fmt.Errorf(
+				"%w: %v",
+				ErrHandlerPanic,
+				recovered,
+			)
+		}
+	}()
+
+	if h.applyResults == nil {
+		return nil, h.apply(
+			ctx,
+			selected,
+		)
+	}
+
+	return h.applyResults(
+		ctx,
+		selected,
+	)
 }
 
 func (h *inTx) verdicts(

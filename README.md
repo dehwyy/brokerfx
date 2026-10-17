@@ -9,6 +9,7 @@ NATS JetStream abstraction library for Go with Uber fx integration. Provides typ
 - **Batch consumer** — per-message verdicts over a fetched batch, one transaction per batch (`InTx`), retry ladder and DLQ hook
 - **TimedActor** — distributed timer scheduler backed by NATS KV with exactly-once callback execution across N replicas
 - **Distributed Hold** — suppress timeouts during long transactions without losing them
+- **Postgres timers** — `pkg/pgtimer` polls a timer table the service owns, with a lease per claim and delete after the handler
 - **Middleware chain** — composable before/after handler middleware (decode, trace, etc.)
 - **Fluent builders** — for connections, streams, and consumers
 - **Uber fx native** — every component ships as an `fx.Module` with lifecycle hooks
@@ -28,6 +29,7 @@ NATS JetStream abstraction library for Go with Uber fx integration. Provides typ
     - [Processed messages cleanup](#processed-messages-cleanup)
     - [Stream](#stream)
   - [pkg/outbox](#pkgoutbox)
+  - [pkg/pgtimer](#pkgpgtimer)
   - [pkg/replay](#pkgreplay)
   - [pkg/replywait](#pkgreplywait)
   - [pkg/timedactor](#pkgtimedactor)
@@ -93,6 +95,7 @@ brokerfx/
     │           ├── consumer-opts-builder/ # Fluent consumer config builder
     │           └── middleware/            # Before/after handler middleware
     ├── outbox/                            # Transactional Outbox pattern
+    ├── pgtimer/                           # Lease-claim poller over a service timer table in Postgres
     ├── replywait/                         # Request/reply over JetStream via per-pod ephemeral consumer
     └── timedactor/                        # Distributed timer scheduler
 ```
@@ -194,6 +197,8 @@ producer.Produce(&OrderCreatedEvent{orderID: "123", payload: p})
 ```
 
 `Produce` does not report a lost publish, so it is not for money or status events. `ProduceSync(ctx, event, opts...)` publishes with `PublishMsg`, waits for the PubAck within `ctx` and returns the error (no stream for the subject, timeout, a server rejection). Inside a business transaction use the outbox instead of either.
+
+`BROKERFX_JS_PUBLISH_ASYNC_MAX_PENDING` (v0.8.0, unset = the nats.go default of 4000) sets the async publish window of every JetStream context the package creates. A value that is not a positive integer is ignored with a warning.
 
 #### Consumer
 
@@ -455,6 +460,14 @@ handler, err := batch.InTx(batch.InTxOpts{
 - `DefaultTransient` is true for SQLSTATE `40001`, `40P01`, `55P03`, `57014`, `57P01`..`57P03` and classes `08` and `53` (any error with a `SQLState() string` method, pgx included), `driver.ErrBadConn`, `context.DeadlineExceeded` and a `net.Error` with `Timeout()`.
 
 **`CoalesceByKey`** groups a batch by key and calls `apply` once with all groups (`[]batch.Group{Key, Msgs}`), groups in order of first appearance and messages inside a group in batch order. `apply` returns one `Result` per group, and that result applies to every message of the group; groups without a result get `Nak(ErrMissingResult)`. `GroupByKey(msgs, key)` is the same grouping for a handler that composes it with `InTx` by hand. A nil `key` or `apply` panics at construction.
+
+**Batch options (v0.8.0).** All of them are off when unset; an explicit `Opts` field wins over the env, the env is the process default when the field is 0.
+
+- `Opts.MinBatch` / `BROKERFX_BATCH_MIN` and `Opts.LingerMax` / `BROKERFX_BATCH_LINGER_MAX`: after the first `Linger` fetch the consumer keeps fetching with `min(Linger, time left)` until the batch has `MinBatch` messages, is full, or `LingerMax` has passed since the first linger fetch. A full batch still goes out at once. `MinBatch > Max` and `LingerMax >= AckWait/4` (30s when `AckWait` is unset) fail `New` with `ErrInvalidOpts`; `MinBatch` without `LingerMax` is switched off with a warning. At 300 msg/s with `Linger` 5ms a batch grows from about 1.5 to `MinBatch`, at the cost of up to `LingerMax` of latency.
+- `Opts.Replicas` / `BROKERFX_BATCH_REPLICAS`: with `Replicas > 0` and no explicit `MaxAckPending` the durable gets `batch.MaxAckPendingFor(replicas, pipeline, max)` = `ceil(1.5 × Replicas × Pipeline × Max)` instead of `Pipeline × Max` of one pod. An explicit value below that fails `New` with `ErrMaxAckPending`; a service that takes the value from its own config clamps it with `MaxAckPendingFor` before the call. `MaxAckPending` belongs to the durable, so during a rolling update the last pod to start writes it; the durable left by an older pod (`Pipeline × Max`) is accepted. `New` logs `replicas`, `max_ack_pending` and `max_ack_pending_wanted`.
+- `InTxOpts.ApplyResults` (instead of `Apply`) returns one `Result` per fresh message: `Ack()`, `batch.Skip()` (settles as ack, counted apart), or a retry or poison verdict. The transaction commits the acked messages; the `processed_messages` claim of every non-acked message is removed in the same transaction, so its redelivery is applied again. Exactly one of `Apply` and `ApplyResults` must be set.
+- `InTxOpts.OrderKey` keeps order per key during bisection: the batch is split by key groups, a failed group of one key commits its longest good prefix, and the rest of that key gets `NakDelay` with `batch.ErrOrderBlocked`, which the consumer settles without counting toward `OnPoison`. An ack after a non-ack of the same key inside one `ApplyResults` call rolls the attempt back and blocks the tail. `OrderKey` nil keeps the index bisection.
+- `Opts.Observer` and `InTxOpts.Observer` (`batch.Observer`: `OnFetch`, `OnApply`, `OnBisect`, `OnSettle` with counts of ack, skip, retry, poison and blocked) are metric hooks; nil skips them.
 
 #### Processed messages cleanup
 
@@ -731,9 +744,46 @@ deps := outbox.RelayDeps{
 
 **`RequeueParked` / `Stats`.** `(*OutboxStore).RequeueParked(ctx, ids []string) (int64, error)` moves parked rows back to `PENDING` with `attempts` reset, for manual recovery. Passing a non-empty `ids` limits it to those rows; passing a nil or empty slice requeues **every** currently parked row, which matters for anything exposing this as an admin endpoint. `(*OutboxStore).Stats(ctx) (Stats, error)` returns the same counts as the `OnStats` hook, for on-demand polling (health checks, admin endpoints).
 
+**Throughput options (v0.8.0).** Unset means the v0.7.0 behaviour. For these knobs a valid env value wins over `Config`, as for the v0.6.2 claim env.
+
+- **Pending gauge** — `Config.PendingGaugeInterval` / `BROKERFX_OUTBOX_PENDING_GAUGE_INTERVAL` (0 = off). When the relay `Observer` also implements `outbox.PendingObserver` (`OnPending(PendingStats{Pending, Capped, OldestPendingAge})`), the relay counts `PENDING` rows every interval by the partial index `idx_outbox_events_pending_created_at`, capped at 10 000 (`Capped`), and takes the oldest age from the database clock. An observer without `OnPending` turns the gauge off with a warning.
+- **Cleanup in batches** — `Config.CleanupBatch` / `BROKERFX_OUTBOX_CLEANUP_BATCH` (0 = one `DELETE` as before). `N > 0` deletes `DONE` and expired `PARKED` rows in `ctid` batches of `N` with a 100ms pause, in a goroutine off the relay loop; a new cleanup does not start while one runs, and `Run` waits for it on stop.
+- **Latest-only subjects** — `Config.LatestOnlyPrefixes` / `BROKERFX_OUTBOX_LATEST_ONLY_PREFIXES` (comma-separated; `$KV.` is always included). Inside one claimed batch only the latest event of a subject under these prefixes is published: when every event of the subject carries the `Brokerfx-Latest-Version` header (`outbox.LatestVersionHeader`, an integer), the highest version wins, ties go to the later row; otherwise the last row wins. The rest are closed as published without a publish. An `Observer` that implements `outbox.SupersededObserver` gets `OnSuperseded(n)`.
+- **tx-drain** — `Config.TxDrain` / `BROKERFX_OUTBOX_TX_DRAIN=true|1` (off) and `Config.TxDrainPublishTimeout` / `BROKERFX_OUTBOX_TX_DRAIN_PUBLISH_TIMEOUT` (2s, must be below 25s, otherwise `NewRelay` keeps the error and the fx `OnStart` returns it). One transaction claims the rows `FOR UPDATE SKIP LOCKED` (`DELETE ... RETURNING` in `DeleteAfterSend`, `UPDATE ... SET state = 'DONE' ... RETURNING` in `UpdateAfterSend`), publishes them within the timeout, writes back the rows that failed and commits. A row whose outcome is unknown (timeout, cancel, transport error) goes back as `PENDING` without `attempts++`; a server refusal counts an attempt with backoff and parks at `MaxAttempts`. No `IN_FLIGHT` rows are written, so a crash leaves the rows `PENDING` for the next relay, and two relays never publish the same row. It runs only on the v2 schema; in `DeleteAfterSend` failed rows are inserted back, so a table with extra `NOT NULL` columns without a default keeps the claim path (error log). After 3 transaction failures in a row it switches itself off for the process (warning). The stalled `IN_FLIGHT` reclaim keeps running for rows of the old path.
+- **Id lists** — settle, revert and `RequeueParked` pass ids as `= ANY(?::uuid[])` or `= ANY(?::text[])` by the type of `outbox_events.id` read once from `information_schema`; the batch claim of `processed_messages` uses `unnest` with `WITH ORDINALITY`. Each statement has one form for any batch size; `IN ?` stays when the type is unknown.
+
 **ОК-0.** `stream-opts-builder.NewDefault` (MaxAge 12h, Replicas 1, Duplicates 15m, WorkQueue) and `outbox.DefaultConfig()` are unchanged by v2 and must stay that way — v2 config lives entirely in the new, separately-opted-in fields and in `RecommendedConfig()`.
 
 ---
+
+### pkg/pgtimer
+
+Timers in a Postgres table the service owns, for a service that writes the timer intent in its business transaction. The library claims due rows with a lease, calls the handler registered for the timer name and deletes the row only after the handler returned `nil`.
+
+```go
+poller, err := pgtimer.New(db, pgtimer.Config{
+	Table: pgtimer.Table{
+		Name:      "payin_timers",
+		Key:       "order_id",
+		TimerName: "name",
+		Attempt:   "attempt_id",
+		DueAt:     "due_at",
+		CreatedAt: "created_at",
+		UpdatedAt: "updated_at",
+	},
+})
+err = poller.Handle("VISIT_RESOURCE", func(ctx context.Context, timer pgtimer.Timer) error {
+	return orders.ExpireVisit(ctx, timer.Key, timer.Attempt)
+})
+pgtimer.RegisterLifecycle(lc, poller)
+```
+
+- **Table.** Column names are plain identifiers (`[A-Za-z_][A-Za-z0-9_]*`, table may be `schema.name`) and are quoted; `CreatedAt` and `UpdatedAt` are optional. The service creates the table and an index on `due_at`.
+- **Claim.** One statement: `WITH due AS MATERIALIZED (SELECT ctid ... WHERE due_at <= now() AND name IN (registered names) ORDER BY due_at, created_at LIMIT free slots FOR UPDATE SKIP LOCKED) UPDATE ... SET due_at = now() + lease, updated_at = now() ... RETURNING` the original `due_at`, the lease `due_at` and the database `now()`. Two pollers never take the same row; a poller that dies gives the row back when the lease ends. Rows with names this poller did not register are not touched.
+- **Fire.** A pool of `Concurrency` workers; each handler runs with `HandlerTimeout`, which must be below `Lease`, and a panic is recovered as `ErrHandlerPanic`. After success the row is deleted by key, name, attempt and the exact lease `due_at`, so a timer that the handler or the business code rescheduled meanwhile (new `due_at`, name or attempt) is kept. A failed handler leaves the row; it fires again when the lease ends, which is the retry delay.
+- **Loop.** A poll every `Poll`; a full batch polls again at once. `Stop(ctx)` stops claiming and waits for running handlers within `ctx`; after the deadline their context is cancelled and unfinished rows fire again after the lease. Nothing claimed is lost.
+- **Observer.** `OnClaim(ClaimEvent{Limit, Claimed, Duration, Err})` and `OnFire(FireEvent{Name, Lag, Duration, Deleted, Err})`, where `Lag` is the database `now()` at claim minus the original `due_at`.
+- **Delivery.** At-least-once: a handler that outlives the lease, or a lost delete, fires again, so handlers re-check the state under a lock.
 
 ### pkg/replay
 
@@ -1100,13 +1150,15 @@ func main() {
 | AckPolicy | `AckExplicitPolicy` |
 | AckWait | `30 seconds` |
 | DeliverPolicy | `DeliverAllPolicy` (`WithDeliverByStartSequence(n)` for a start sequence, 0 keeps `DeliverAll`) |
-| MaxAckPending | server default (1000); `WithMaxAckPending(n)`; the batch consumer sets `Pipeline × Max` when unset |
+| MaxAckPending | server default (1000); `WithMaxAckPending(n)`; the batch consumer sets `Pipeline × Max` when unset, `MaxAckPendingFor(Replicas, Pipeline, Max)` with `Replicas > 0` |
 | Pull: MaxMessages | `50`; `1` when `MaxInFlight > 0` |
 | MaxInFlight | `0` = unbounded (`BROKERFX_CONSUMER_MAX_IN_FLIGHT`) |
 | NakBackoff | off (`BROKERFX_CONSUMER_NAK_BACKOFF=true` or a list such as `1s,2s,5s`) |
 | Replicas | `0` = inherit the stream (`WithReplicas(n)`, reset to `0` when it does not fit) |
 | Pull: Heartbeat | `10 seconds` |
 | Batch: Max / Linger / Pipeline | `16` / `5ms` / `1` (`BROKERFX_BATCH_MAX`, `BROKERFX_BATCH_LINGER`, `BROKERFX_BATCH_PIPELINE`) |
+| Batch: MinBatch / LingerMax | off (`BROKERFX_BATCH_MIN`, `BROKERFX_BATCH_LINGER_MAX`) |
+| Batch: Replicas | `0` = one pod (`BROKERFX_BATCH_REPLICAS`) |
 | Batch: retry ladder | `1s, 5s, 30s, 2m, 5m`, `MaxAttempts = len(Delays)+1` |
 | Processed cleanup | retention `48h` (`BROKERFX_PROCESSED_RETENTION`), interval `1h` (`BROKERFX_PROCESSED_CLEANUP_INTERVAL`), batch `5000` |
 
@@ -1124,6 +1176,10 @@ func main() {
 | Batched (R1) | off (`Config.Batched` or `BROKERFX_OUTBOX_RELAY_BATCHED=true\|1`) |
 | Linger | `5ms` when batched |
 | Event id | UUIDv7 (`BROKERFX_OUTBOX_ID_V7=false` for UUIDv4) |
+| Pending gauge | off (`BROKERFX_OUTBOX_PENDING_GAUGE_INTERVAL`) |
+| Cleanup batch | `0`, one `DELETE` (`BROKERFX_OUTBOX_CLEANUP_BATCH`) |
+| Latest-only prefixes | `$KV.` only (`BROKERFX_OUTBOX_LATEST_ONLY_PREFIXES`) |
+| tx-drain | off (`BROKERFX_OUTBOX_TX_DRAIN`), publish timeout `2s` |
 
 ### TimedActor Defaults
 
@@ -1135,6 +1191,16 @@ func main() {
 | BucketTTL | `48 hours` |
 | MarkerTTL | `0` (off, existing bucket setting kept) |
 | RescanInterval | `0` (rescan every `CheckInterval`) |
+
+### PgTimer Defaults
+
+| Setting | Default | Env |
+|---|---|---|
+| Lease | `60s` | `BROKERFX_PGTIMER_LEASE` |
+| HandlerTimeout | `30s`, below `Lease` | `BROKERFX_PGTIMER_HANDLER_TIMEOUT` |
+| Poll | `1s` | `BROKERFX_PGTIMER_POLL` |
+| Batch | `100` (1..1000) | `BROKERFX_PGTIMER_BATCH` |
+| Concurrency | `8` (1..256) | `BROKERFX_PGTIMER_CONCURRENCY` |
 
 ---
 

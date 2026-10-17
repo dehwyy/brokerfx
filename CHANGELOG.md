@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.8.0
+
+- batch: `Opts.MinBatch` / `BROKERFX_BATCH_MIN` and `Opts.LingerMax` / `BROKERFX_BATCH_LINGER_MAX` (off): after the first linger fetch the consumer keeps fetching until `MinBatch`, a full batch or `LingerMax`. `MinBatch > Max` and `LingerMax >= AckWait/4` fail `New`; `MinBatch` without `LingerMax` is off with a warning. (ARCH-04)
+- batch: `Opts.Replicas` / `BROKERFX_BATCH_REPLICAS` (0 = `Pipeline × Max` as before). With `Replicas > 0` an unset `MaxAckPending` becomes `batch.MaxAckPendingFor(replicas, pipeline, max)` = `ceil(1.5 × R × P × M)`; an explicit lower value fails with `ErrMaxAckPending`; a durable left by an older pod is accepted. Logged at start. (ARCH-17, ERR-52, ERR-08)
+- batch: `InTxOpts.ApplyResults` with per-message verdicts and `batch.Skip()`; non-acked messages release their `processed_messages` claim in the same transaction. `batch.Observer` (`OnFetch`, `OnApply`, `OnBisect`, `OnSettle`) on `Opts` and `InTxOpts`. (ARCH-09)
+- batch: `InTxOpts.OrderKey` bisects by key groups; a failed group commits its longest good prefix and holds the tail with `NakDelay(…, ErrOrderBlocked)`, which does not count toward `OnPoison`; an ack after a non-ack of the same key rolls the attempt back. (MQ-16, ERR-48)
+- outbox: `Config.TxDrain` / `BROKERFX_OUTBOX_TX_DRAIN` (off) and `TxDrainPublishTimeout` / `BROKERFX_OUTBOX_TX_DRAIN_PUBLISH_TIMEOUT` (2s, below 25s): claim, publish and write-back of failed rows in one transaction, no `IN_FLIGHT`. Unknown outcome keeps `attempts`, a refusal counts an attempt and parks at `MaxAttempts`. Off for the process after 3 transaction failures in a row; in `DeleteAfterSend` needs no extra `NOT NULL` columns without default. `UpdateAfterSend` marks rows `DONE` in the transaction instead of deleting them. (DB-04)
+- outbox: id lists as `= ANY(?::uuid[])` / `= ANY(?::text[])` by the detected type of `outbox_events.id`, the batch claim of `processed_messages` through `unnest … WITH ORDINALITY`; `IN ?` stays when the type is unknown. No flag. (DB-23)
+- outbox: `Config.PendingGaugeInterval` / `BROKERFX_OUTBOX_PENDING_GAUGE_INTERVAL` (0 = off) feeds `PendingObserver.OnPending` with the `PENDING` count capped at 10 000 and the oldest age by the database clock. (ERR-25)
+- outbox: `Config.CleanupBatch` / `BROKERFX_OUTBOX_CLEANUP_BATCH` (0 = one `DELETE` as before): `DONE` and expired `PARKED` rows deleted in `ctid` batches with a 100ms pause, off the relay loop. (ERR-53)
+- outbox: `Config.LatestOnlyPrefixes` / `BROKERFX_OUTBOX_LATEST_ONLY_PREFIXES` (`$KV.` always): one publish per subject in a batch, highest `Brokerfx-Latest-Version` when every row has it, else the last row; `SupersededObserver.OnSuperseded(n)`. (MQ-08)
+- outbox: optional `Message.Headers` per element in `SaveMessages` and `SaveMessage`; the element wins over `WithHeaders`, reserved headers are checked per element. (SVC-02)
+- producer: `ProduceSync(ctx, event, opts...)` waits for the PubAck within `ctx` and returns the publish error. (ERR-43)
+- jetstream: `BROKERFX_JS_PUBLISH_ASYNC_MAX_PENDING` sets the async publish window (unset = nats.go default). (ERR-83)
+- pgtimer: new package. Lease-claim poller over a timer table the service owns (`New`, `Handle`, `Start`, `Stop`, `RegisterLifecycle`, `Observer`), delete after the handler by key, name, attempt and the exact lease `due_at`; env `BROKERFX_PGTIMER_LEASE` (60s), `_HANDLER_TIMEOUT` (30s), `_POLL` (1s), `_BATCH` (100), `_CONCURRENCY` (8). (MQ-02)
+- timedactor: `Hold` keeps the later of the original deadline and `now + MaxHoldDuration`; before, a timer due in 10 minutes was moved to 15 seconds. (ERR-39) README documents the at-most-once callback of timedactor. (ERR-70)
+- With the new fields and env unset, behaviour is the same as in v0.7.0 except the `Hold` deadline fix and the `= ANY` id lists.
+
 ## v0.7.0
 
 - timedactor: `Config.MarkerTTL` (0 = off, at least 1s). Fired and cleared keys are removed with `Purge(PurgeTTL(MarkerTTL))` under the same revision guard, and the bucket gets `LimitMarkerTTL`, so delete markers expire after `MarkerTTL` instead of living for `BucketTTL`. With `MarkerTTL = 0` an existing bucket keeps its marker TTL. Rollback trap: once enabled, an image below v0.7.0 crash-loops with `message TTL status can not be disabled`; delete the bucket before rolling back and let the service reconciler restore the timers (mandatory).

@@ -59,6 +59,7 @@ func New(opts Opts) (*Consumer, error) {
 		onFatal:        opts.OnFatal,
 		delays:         s.delays,
 		maxAttempts:    s.maxAttempts,
+		maxDeliver:     actual.MaxDeliver,
 		heartbeatEvery: actual.AckWait / 2,
 		max:            s.max,
 		linger:         s.linger,

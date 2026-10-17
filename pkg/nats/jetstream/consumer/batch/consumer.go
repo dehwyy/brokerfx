@@ -13,6 +13,7 @@ type Consumer struct {
 	onFatal        func(error)
 	delays         []time.Duration
 	maxAttempts    int
+	maxDeliver     int
 	heartbeatEvery time.Duration
 	max            int
 	linger         time.Duration

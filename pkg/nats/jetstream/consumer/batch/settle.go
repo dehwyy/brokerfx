@@ -104,6 +104,7 @@ func (c *Consumer) retry(
 		ErrOrderBlocked,
 	) {
 		return c.hold(
+			ctx,
 			msg,
 			result,
 			floor,

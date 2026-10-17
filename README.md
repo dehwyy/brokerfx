@@ -319,6 +319,7 @@ drainer.Drain() // waits for all consumers to finish in-flight messages
 - `consbuilder.PartitionConfigs(consbuilder.Partitions{Base, Count, Filters, Group, PinnedTTL})` returns one config per partition `i`: name and durable `<base>-p<i>`, `FilterSubjects = Filters(i)` (the service builds them from its proto partition helpers; the library knows no hash), `AckExplicit`, `DeliverAll`, pinned. Filters of different partitions must not overlap as NATS patterns, every partition needs a filter, otherwise `ErrInvalidPartitions`. `consbuilder.FromConfig(cfg)` turns a config into a builder for `consumer.New` and `batch.New`; nats.go code can create the configs directly.
 - Pinned is not exclusive at a pin change: messages the old client took and did not ack come back to the new client after `AckWait`, so a handler that committed but did not ack is run twice. Keep the database deduplication (`processed_messages`, business keys, CAS) on partitioned consumers.
 - The server (2.14) updates `PriorityPolicy` of a live durable in place, none → pinned and back, keeping the ack floor; a `StrictUpdate` consumer accepts that update.
+- A workqueue stream accepts only `AckExplicit` durables: `AckAll` fails create with err_code 10098, so partition durables have no ack-last mode.
 
 #### Consume-side idempotency
 

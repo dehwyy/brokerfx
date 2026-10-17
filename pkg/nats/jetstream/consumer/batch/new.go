@@ -47,7 +47,7 @@ func New(opts Opts) (*Consumer, error) {
 	actual := bound.CachedInfo().Config
 	if _, err := validate(
 		actual,
-		s,
+		s.perPod(),
 	); err != nil {
 		return nil, err
 	}
@@ -103,8 +103,16 @@ func New(opts Opts) (*Consumer, error) {
 			s.maxAttempts,
 		).
 		Int(
+			"replicas",
+			s.replicas,
+		).
+		Int(
 			"max_ack_pending",
 			actual.MaxAckPending,
+		).
+		Int(
+			"max_ack_pending_wanted",
+			cfg.MaxAckPending,
 		).
 		Int(
 			"max_deliver",

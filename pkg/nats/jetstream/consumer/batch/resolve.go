@@ -14,6 +14,7 @@ const (
 	envPipeline     = "BROKERFX_BATCH_PIPELINE"
 	envMinBatch     = "BROKERFX_BATCH_MIN"
 	envLingerMax    = "BROKERFX_BATCH_LINGER_MAX"
+	envReplicas     = "BROKERFX_BATCH_REPLICAS"
 	defaultMax      = 16
 	defaultLinger   = 5 * time.Millisecond
 	defaultPipeline = 1
@@ -30,6 +31,7 @@ type settings struct {
 	maxAttempts int
 	minBatch    int
 	lingerMax   time.Duration
+	replicas    int
 }
 
 func resolve(opts Opts) (settings, error) {
@@ -116,6 +118,22 @@ func resolve(opts Opts) (settings, error) {
 		return settings{}, err
 	}
 
+	replicas, err := resolveInt(
+		opts.Replicas,
+		envReplicas,
+		0,
+	)
+	if err != nil {
+		return settings{}, err
+	}
+	if replicas < 0 {
+		return settings{}, fmt.Errorf(
+			"%w: Replicas %d must not be negative",
+			ErrInvalidOpts,
+			replicas,
+		)
+	}
+
 	return settings{
 		max:         maxSize,
 		linger:      linger,
@@ -124,6 +142,7 @@ func resolve(opts Opts) (settings, error) {
 		maxAttempts: maxAttempts,
 		minBatch:    minBatch,
 		lingerMax:   lingerMax,
+		replicas:    replicas,
 	}, nil
 }
 

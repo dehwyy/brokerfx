@@ -18,6 +18,7 @@ type Opts struct {
 	MinBatch            int
 	LingerMax           time.Duration
 	Pipeline            int
+	Replicas            int
 	Delays              []time.Duration
 	MaxAttempts         int
 	OnPoison            PoisonFunc

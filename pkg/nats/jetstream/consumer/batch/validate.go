@@ -18,16 +18,23 @@ func validate(
 		)
 	}
 
-	inFlight := s.pipeline * s.max
+	inFlight := MaxAckPendingFor(
+		s.replicas,
+		s.pipeline,
+		s.max,
+	)
 	if cfg.MaxAckPending == 0 {
 		cfg.MaxAckPending = inFlight
 	}
 	if cfg.MaxAckPending != -1 && cfg.MaxAckPending < inFlight {
 		return cfg, fmt.Errorf(
-			"%w: MaxAckPending %d < Pipeline*Max %d",
+			"%w: MaxAckPending %d < %d for Replicas %d, Pipeline %d, Max %d",
 			ErrMaxAckPending,
 			cfg.MaxAckPending,
 			inFlight,
+			s.replicas,
+			s.pipeline,
+			s.max,
 		)
 	}
 

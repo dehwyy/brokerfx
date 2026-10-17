@@ -20,10 +20,10 @@ func poisonFrame(
 				"subject",
 				msg.Subject(),
 			).
-			Msg("consumer frame cannot be unpacked, terminated without OnPoison")
-		logTermErr(
+			Msg("consumer frame cannot be unpacked, handed to the handler as is without OnPoison")
+		process(
 			msg,
-			msg.Term(),
+			opts,
 		)
 		return
 	}

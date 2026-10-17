@@ -107,13 +107,43 @@ func TestDeliverNaksABrokenFrameWhenOnPoisonFails(t *testing.T) {
 	}
 }
 
-func TestDeliverTermsABrokenFrameWithoutOnPoison(t *testing.T) {
-	msg := newFrameSettleMsg(t, "a")
-	msg.data = nil
+func TestDeliverHandsABrokenFrameToTheHandlerWithoutOnPoison(t *testing.T) {
+	cases := []struct {
+		name    string
+		mutate  func(msg *frameSettleMsg)
+		handler error
+		want    string
+	}{
+		{
+			name:    "bad msgpack, handler dead-letters it",
+			mutate:  func(msg *frameSettleMsg) { msg.data = nil },
+			handler: nil,
+			want:    "ack",
+		},
+		{
+			name:    "unknown version, handler fails",
+			mutate:  func(msg *frameSettleMsg) { msg.headers.Set(frame.HeaderVersion, "2") },
+			handler: errors.New("cannot decode"),
+			want:    "nak",
+		},
+	}
 
-	deliver(msg, handlerOf(func(jetstream.Msg) error { return nil }))
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			msg := newFrameSettleMsg(t, "a", "b")
+			tc.mutate(msg)
+			var seen []jetstream.Msg
+			deliver(msg, handlerOf(func(got jetstream.Msg) error {
+				seen = append(seen, got)
+				return tc.handler
+			}))
 
-	if msg.count("term") != 1 {
-		t.Fatalf("frame calls %v", msg.calls)
+			if len(seen) != 1 || seen[0] != msg {
+				t.Fatalf("handler must get the raw frame once, got %v", seen)
+			}
+			if msg.count(tc.want) != 1 || msg.count("term") != 0 {
+				t.Fatalf("frame calls %v", msg.calls)
+			}
+		})
 	}
 }

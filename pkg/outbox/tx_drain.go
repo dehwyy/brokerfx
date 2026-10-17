@@ -8,7 +8,10 @@ import (
 	"gorm.io/gorm"
 )
 
-const txDrainMaxFailures = 3
+const (
+	txDrainMaxFailures       = 3
+	txDrainUnknownRetryFloor = 5 * time.Second
+)
 
 var txDrainSelect = `WITH c AS MATERIALIZED (
 	SELECT id FROM outbox_events
@@ -205,7 +208,11 @@ func (r *OutboxRelay) drainSettle(
 		errMsg := outcome.err.Error()
 		row.LastError = &errMsg
 		row.State = StatePending
-		row.NextAttemptAt = nil
+		retryAt := now.Add(max(
+			r.config.TxDrainPublishTimeout,
+			txDrainUnknownRetryFloor,
+		))
+		row.NextAttemptAt = &retryAt
 		row.UpdatedAt = now
 		if !unknownOutcome(outcome.err) {
 			row.Attempts++

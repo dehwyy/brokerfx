@@ -12,6 +12,7 @@ import (
 
 	"github.com/dehwyy/brokerfx/integration/testenv"
 	"github.com/dehwyy/brokerfx/pkg/outbox"
+	natsgo "github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
@@ -440,4 +441,93 @@ func TestTxDrainServerRefusalCountsAttempts(t *testing.T) {
 		5*time.Second,
 		50*time.Millisecond,
 	)
+}
+
+func TestTxDrainStreamWithoutAckDoesNotStarveOtherSubjects(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		mode outbox.OutboxMode
+	}{
+		{
+			name: "delete after send",
+			mode: outbox.ModeDeleteAfterSend,
+		},
+		{
+			name: "update after send",
+			mode: outbox.ModeUpdateAfterSend,
+		},
+	}
+
+	for _, tc := range cases {
+		mode := tc.mode
+		t.Run(
+			tc.name,
+			func(t *testing.T) {
+				t.Parallel()
+
+				db := testenv.Postgres(t)
+				require.NoError(t, outbox.AutoMigrate(db))
+
+				js, _ := testenv.EmbeddedNATS(t)
+				newStream(t, js, "DRAIN_OK", "drain.ok.>")
+				silent, err := js.Conn().Subscribe(
+					"drain.stuck.>",
+					func(*natsgo.Msg) {},
+				)
+				require.NoError(t, err)
+				t.Cleanup(func() {
+					require.NoError(t, silent.Unsubscribe())
+				})
+
+				cfg := drainConfig(mode)
+				cfg.TxDrainPublishTimeout = 300 * time.Millisecond
+				harness := testenv.NewRelayHarness(
+					t,
+					db,
+					outbox.NewJetStreamProducer(js),
+					cfg,
+				)
+
+				stuck := make(
+					[]outbox.Message,
+					cfg.BatchSize+10,
+				)
+				for i := range stuck {
+					stuck[i] = outbox.Message{
+						Subject: "drain.stuck.result",
+						Payload: []byte(fmt.Sprintf("stuck-%04d", i)),
+					}
+				}
+				require.NoError(t, harness.Store.SaveMessages(context.Background(), stuck))
+				ok := make(
+					[]outbox.Message,
+					40,
+				)
+				for i := range ok {
+					ok[i] = outbox.Message{
+						Subject: "drain.ok.completed",
+						Payload: []byte(fmt.Sprintf("ok-%04d", i)),
+					}
+				}
+				require.NoError(t, harness.Store.SaveMessages(context.Background(), ok))
+
+				harness.Start(t)
+				harness.Wake()
+
+				require.Eventually(
+					t,
+					func() bool {
+						return streamMsgs(t, js, "DRAIN_OK") == uint64(len(ok)) &&
+							countRows(t, db, "select count(*) from outbox_events where topic = 'drain.ok.completed' and state = 'PENDING'") == 0
+					},
+					4*time.Second,
+					50*time.Millisecond,
+				)
+				require.Equal(t, int64(len(stuck)), countRows(t, db, "select count(*) from outbox_events where topic = 'drain.stuck.result' and state = 'PENDING' and attempts = 0"))
+				require.Equal(t, int64(len(stuck)), countRows(t, db, "select count(*) from outbox_events where topic = 'drain.stuck.result' and next_attempt_at > now()"))
+			},
+		)
+	}
 }

@@ -176,3 +176,45 @@ func TestPublishWithinBoundsPublishTime(t *testing.T) {
 		t.Fatalf("batch errs %v", errs)
 	}
 }
+
+type ctxBatchProducer struct{}
+
+func (ctxBatchProducer) Produce(context.Context, ProducerEvent) error {
+	return nil
+}
+
+func (ctxBatchProducer) ProduceBatch(ctx context.Context, events []ProducerEvent) []error {
+	errs := make(
+		[]error,
+		len(events),
+	)
+	for i, event := range events {
+		if event.Subject == "slow" {
+			<-ctx.Done()
+			errs[i] = ctx.Err()
+		}
+	}
+
+	return errs
+}
+
+func TestPublishWithinKeepsBatchResultsAfterTimeout(t *testing.T) {
+	r := &OutboxRelay{
+		producer: ctxBatchProducer{},
+	}
+	errs := r.publishWithin(
+		context.Background(),
+		[]ProducerEvent{
+			{
+				Subject: "slow",
+			},
+			{
+				Subject: "fast",
+			},
+		},
+		50*time.Millisecond,
+	)
+	if !errors.Is(errs[0], context.DeadlineExceeded) || errs[1] != nil {
+		t.Fatalf("errs %v", errs)
+	}
+}

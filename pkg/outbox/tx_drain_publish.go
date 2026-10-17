@@ -5,6 +5,8 @@ import (
 	"time"
 )
 
+const txDrainResultGrace = 100 * time.Millisecond
+
 type indexedErr struct {
 	index int
 	err   error
@@ -43,12 +45,22 @@ func (r *OutboxRelay) publishWithin(
 
 		select {
 		case got := <-done:
-			for i := range errs {
-				if i < len(got) {
-					errs[i] = got[i]
-				}
-			}
+			copyErrs(
+				errs,
+				got,
+			)
 		case <-pubCtx.Done():
+			grace := time.NewTimer(txDrainResultGrace)
+			defer grace.Stop()
+
+			select {
+			case got := <-done:
+				copyErrs(
+					errs,
+					got,
+				)
+			case <-grace.C:
+			}
 		}
 
 		return errs
@@ -140,4 +152,15 @@ func (r *OutboxRelay) drainPublish(
 	}
 
 	return outcomes
+}
+
+func copyErrs(
+	errs []error,
+	got []error,
+) {
+	for i := range errs {
+		if i < len(got) {
+			errs[i] = got[i]
+		}
+	}
 }

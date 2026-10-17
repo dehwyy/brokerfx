@@ -18,6 +18,8 @@ const (
 type inTx struct {
 	tx             txmanager.TxManager
 	apply          func(ctx context.Context, msgs []jetstream.Msg) error
+	applyResults   func(ctx context.Context, msgs []jetstream.Msg) ([]Result, error)
+	observer       Observer
 	key            KeyFunc
 	noDedup        bool
 	transient      func(err error) bool
@@ -27,9 +29,9 @@ type inTx struct {
 }
 
 func InTx(opts InTxOpts) (Handler, error) {
-	if opts.TxManager == nil || opts.Apply == nil {
+	if opts.TxManager == nil || (opts.Apply == nil) == (opts.ApplyResults == nil) {
 		return nil, fmt.Errorf(
-			"%w: InTx requires TxManager and Apply",
+			"%w: InTx requires TxManager and exactly one of Apply and ApplyResults",
 			ErrInvalidOpts,
 		)
 	}
@@ -37,6 +39,8 @@ func InTx(opts InTxOpts) (Handler, error) {
 	h := &inTx{
 		tx:             opts.TxManager,
 		apply:          opts.Apply,
+		applyResults:   opts.ApplyResults,
+		observer:       observerOrNoop(opts.Observer),
 		key:            opts.Key,
 		noDedup:        opts.NoDedup,
 		transient:      opts.Transient,

@@ -30,10 +30,16 @@ func (c *Consumer) start() {
 func (c *Consumer) loop(ctx context.Context) {
 	idle := true
 	for ctx.Err() == nil {
+		started := time.Now()
 		msgs, err := c.fetchBatch(
 			ctx,
 			idle,
 		)
+		c.watch().OnFetch(FetchEvent{
+			Messages: len(msgs),
+			Max:      c.max,
+			Duration: time.Since(started),
+		})
 		if err != nil && isFatalFetchErr(err) {
 			c.nakAll(msgs)
 			c.fatal(err)

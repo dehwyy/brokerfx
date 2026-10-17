@@ -11,10 +11,12 @@ import (
 type InTxOpts struct {
 	TxManager      txmanager.TxManager
 	Apply          func(ctx context.Context, msgs []jetstream.Msg) error
+	ApplyResults   func(ctx context.Context, msgs []jetstream.Msg) ([]Result, error)
 	Key            KeyFunc
 	NoDedup        bool
 	Transient      func(err error) bool
 	RetryBudget    int
 	TransientDelay time.Duration
 	TxName         string
+	Observer       Observer
 }

@@ -7,4 +7,5 @@ const (
 	VerdictAck
 	VerdictNakDelay
 	VerdictTerm
+	VerdictSkip
 )

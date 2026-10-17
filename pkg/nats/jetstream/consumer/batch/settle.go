@@ -14,40 +14,48 @@ func (c *Consumer) settle(
 	msgs []jetstream.Msg,
 	results []Result,
 ) {
+	var tally SettleEvent
 	for i, msg := range msgs {
 		messageResult := Nak(ErrMissingResult)
 		if i < len(results) {
 			messageResult = results[i]
 		}
 
-		c.apply(
+		tally = tally.with(c.apply(
 			ctx,
 			msg,
 			messageResult,
-		)
+		))
 	}
+
+	c.watch().OnSettle(tally)
 }
 
 func (c *Consumer) apply(
 	ctx context.Context,
 	msg jetstream.Msg,
 	result Result,
-) {
+) settleKind {
 	switch result.Verdict {
-	case VerdictAck:
+	case VerdictAck, VerdictSkip:
 		logSettleErr(
 			msg,
 			"ack",
 			msg.Ack(),
 		)
+		if result.Verdict == VerdictSkip {
+			return settledSkip
+		}
+		return settledAck
 	case VerdictTerm:
 		c.sendPoison(
 			ctx,
 			msg,
 			result.Err,
 		)
+		return settledPoison
 	default:
-		c.retry(
+		return c.retry(
 			ctx,
 			msg,
 			result,
@@ -59,7 +67,7 @@ func (c *Consumer) retry(
 	ctx context.Context,
 	msg jetstream.Msg,
 	result Result,
-) {
+) settleKind {
 	if errors.Is(
 		result.Err,
 		ErrPoison,
@@ -69,7 +77,7 @@ func (c *Consumer) retry(
 			msg,
 			result.Err,
 		)
-		return
+		return settledPoison
 	}
 
 	delivered := numDelivered(msg)
@@ -83,7 +91,7 @@ func (c *Consumer) retry(
 			msg,
 			reason,
 		)
-		return
+		return settledPoison
 	}
 
 	delay := c.delayForDelivery(delivered)
@@ -112,6 +120,8 @@ func (c *Consumer) retry(
 		"nak",
 		msg.NakWithDelay(delay),
 	)
+
+	return settledRetry
 }
 
 func numDelivered(msg jetstream.Msg) uint64 {

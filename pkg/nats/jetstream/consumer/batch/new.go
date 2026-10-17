@@ -54,6 +54,7 @@ func New(opts Opts) (*Consumer, error) {
 
 	c := &Consumer{
 		handler:        opts.Handler,
+		observer:       observerOrNoop(opts.Observer),
 		onPoison:       opts.OnPoison,
 		onFatal:        opts.OnFatal,
 		delays:         s.delays,

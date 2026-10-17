@@ -20,4 +20,5 @@ type Opts struct {
 	MaxAttempts         int
 	OnPoison            PoisonFunc
 	OnFatal             func(error)
+	Observer            Observer
 }

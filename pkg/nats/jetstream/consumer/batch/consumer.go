@@ -8,6 +8,7 @@ import (
 
 type Consumer struct {
 	handler        Handler
+	observer       Observer
 	onPoison       PoisonFunc
 	onFatal        func(error)
 	delays         []time.Duration

@@ -31,6 +31,21 @@ func validate(
 		)
 	}
 
+	if s.lingerMax > 0 {
+		ackWait := cfg.AckWait
+		if ackWait <= 0 {
+			ackWait = defaultAckWait
+		}
+		if s.lingerMax >= ackWait/4 {
+			return cfg, fmt.Errorf(
+				"%w: LingerMax %s, want below AckWait/4 %s",
+				ErrInvalidOpts,
+				s.lingerMax,
+				ackWait/4,
+			)
+		}
+	}
+
 	if cfg.MaxDeliver > 0 && (s.maxAttempts < 0 || cfg.MaxDeliver <= s.maxAttempts) {
 		return cfg, fmt.Errorf(
 			"%w: MaxDeliver %d, MaxAttempts %d",

@@ -15,6 +15,8 @@ type Opts struct {
 	Handler             Handler
 	Max                 int
 	Linger              time.Duration
+	MinBatch            int
+	LingerMax           time.Duration
 	Pipeline            int
 	Delays              []time.Duration
 	MaxAttempts         int

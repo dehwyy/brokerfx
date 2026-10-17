@@ -62,6 +62,8 @@ func New(opts Opts) (*Consumer, error) {
 		heartbeatEvery: actual.AckWait / 2,
 		max:            s.max,
 		linger:         s.linger,
+		minBatch:       s.minBatch,
+		lingerMax:      s.lingerMax,
 		pipeline:       s.pipeline,
 		fetcher:        bound,
 	}
@@ -87,6 +89,14 @@ func New(opts Opts) (*Consumer, error) {
 		Int(
 			"pipeline",
 			s.pipeline,
+		).
+		Int(
+			"min_batch",
+			s.minBatch,
+		).
+		Dur(
+			"linger_max",
+			s.lingerMax,
 		).
 		Int(
 			"max_attempts",

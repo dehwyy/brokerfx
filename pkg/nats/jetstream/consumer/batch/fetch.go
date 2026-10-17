@@ -49,6 +49,7 @@ func (c *Consumer) fetchBatch(
 		return msgs, nil
 	}
 
+	started := c.clock()
 	rest, err := c.collect(
 		room,
 		jetstream.FetchMaxWait(c.linger),
@@ -57,8 +58,63 @@ func (c *Consumer) fetchBatch(
 		msgs,
 		rest...,
 	)
+	if err != nil {
+		return msgs, err
+	}
 
-	return msgs, err
+	return c.fillToMin(
+		ctx,
+		msgs,
+		started,
+	)
+}
+
+func (c *Consumer) fillToMin(
+	ctx context.Context,
+	msgs []jetstream.Msg,
+	started time.Time,
+) ([]jetstream.Msg, error) {
+	if c.minBatch <= 0 || c.lingerMax <= 0 {
+		return msgs, nil
+	}
+
+	deadline := started.Add(c.lingerMax)
+	for len(msgs) < c.minBatch && len(msgs) < c.max && ctx.Err() == nil {
+		remaining := deadline.Sub(c.clock())
+		if remaining <= 0 {
+			return msgs, nil
+		}
+
+		wait := min(
+			c.linger,
+			remaining,
+		)
+		if wait < time.Millisecond {
+			wait = time.Millisecond
+		}
+
+		more, err := c.collect(
+			c.max-len(msgs),
+			jetstream.FetchMaxWait(wait),
+		)
+		msgs = append(
+			msgs,
+			more...,
+		)
+		if err != nil {
+			return msgs, err
+		}
+	}
+
+	return msgs, nil
+}
+
+func (c *Consumer) clock() time.Time {
+	if c.now == nil {
+		return time.Now()
+	}
+
+	return c.now()
 }
 
 func (c *Consumer) collect(

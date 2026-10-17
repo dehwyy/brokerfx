@@ -16,6 +16,9 @@ type Consumer struct {
 	heartbeatEvery time.Duration
 	max            int
 	linger         time.Duration
+	minBatch       int
+	lingerMax      time.Duration
+	now            func() time.Time
 	pipeline       int
 	fetcher        fetcher
 	loopCtx        context.Context

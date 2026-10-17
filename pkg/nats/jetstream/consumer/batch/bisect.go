@@ -144,6 +144,19 @@ func (h *inTx) attempt(
 				)
 			}
 
+			if h.orderKey != nil {
+				if blocked := orderViolations(
+					msgs,
+					indexes,
+					applied,
+					h.orderKey,
+				); len(blocked) > 0 {
+					return &orderViolation{
+						blocked: blocked,
+					}
+				}
+			}
+
 			byIndex, err := h.verdicts(
 				ctx,
 				msgs,

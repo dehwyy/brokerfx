@@ -66,3 +66,41 @@ func TestInTxPostgresApplyResultsReleasesRetryAndPoisonClaims(t *testing.T) {
 	)
 	require.Equal(t, batch.VerdictNakDelay, again[0].Verdict)
 }
+
+func TestInTxPostgresOrderKeyCommitsOtherKeysAndHoldsTail(t *testing.T) {
+	db, tx := inTxEnv(t)
+	require.NoError(t, db.Create(&item{Name: "A2"}).Error)
+
+	handler, err := batch.InTx(batch.InTxOpts{
+		TxManager: tx,
+		OrderKey: func(msg jetstream.Msg) string {
+			return string(msg.Data()[:1])
+		},
+		Apply: func(ctx context.Context, msgs []jetstream.Msg) error {
+			for _, msg := range msgs {
+				if err := tx.GetConnection(ctx).Create(&item{Name: string(msg.Data())}).Error; err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	})
+	require.NoError(t, err)
+
+	results := handler(
+		context.Background(),
+		pgMsgs("A1", "B1", "A2", "A3"),
+	)
+	require.Equal(t, batch.VerdictAck, results[0].Verdict)
+	require.Equal(t, batch.VerdictAck, results[1].Verdict)
+	require.Equal(t, batch.VerdictNak, results[2].Verdict)
+	require.ErrorIs(t, results[3].Err, batch.ErrOrderBlocked)
+
+	var names []string
+	require.NoError(t, db.Raw("select name from items order by name").Scan(&names).Error)
+	require.Equal(t, []string{"A1", "A2", "B1"}, names)
+
+	var claimed []string
+	require.NoError(t, db.Raw("select message_id from processed_messages order by message_id").Scan(&claimed).Error)
+	require.Equal(t, []string{"id-A1", "id-B1"}, claimed)
+}

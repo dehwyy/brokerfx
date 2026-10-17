@@ -11,4 +11,5 @@ var (
 	ErrHandlerPanic      = errors.New("batch: handler panicked")
 	ErrPoison            = errors.New("batch: poison message")
 	ErrAttemptsExhausted = errors.New("batch: delivery attempts exhausted")
+	ErrOrderBlocked      = errors.New("batch: message held behind a failed message with the same order key")
 )

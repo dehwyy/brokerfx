@@ -70,6 +70,16 @@ func (c *Consumer) retry(
 ) settleKind {
 	if errors.Is(
 		result.Err,
+		ErrOrderBlocked,
+	) {
+		return c.hold(
+			msg,
+			result,
+		)
+	}
+
+	if errors.Is(
+		result.Err,
 		ErrPoison,
 	) {
 		c.sendPoison(

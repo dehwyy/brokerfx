@@ -13,6 +13,7 @@ type InTxOpts struct {
 	Apply          func(ctx context.Context, msgs []jetstream.Msg) error
 	ApplyResults   func(ctx context.Context, msgs []jetstream.Msg) ([]Result, error)
 	Key            KeyFunc
+	OrderKey       KeyFunc
 	NoDedup        bool
 	Transient      func(err error) bool
 	RetryBudget    int

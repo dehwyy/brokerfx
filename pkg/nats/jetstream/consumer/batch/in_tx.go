@@ -21,6 +21,7 @@ type inTx struct {
 	applyResults   func(ctx context.Context, msgs []jetstream.Msg) ([]Result, error)
 	observer       Observer
 	key            KeyFunc
+	orderKey       KeyFunc
 	noDedup        bool
 	transient      func(err error) bool
 	retryBudget    int
@@ -42,6 +43,7 @@ func InTx(opts InTxOpts) (Handler, error) {
 		applyResults:   opts.ApplyResults,
 		observer:       observerOrNoop(opts.Observer),
 		key:            opts.Key,
+		orderKey:       opts.OrderKey,
 		noDedup:        opts.NoDedup,
 		transient:      opts.Transient,
 		retryBudget:    opts.RetryBudget,
@@ -91,6 +93,21 @@ func (h *inTx) handle(
 	}
 
 	budget := h.retryBudget
+	if h.orderKey != nil {
+		h.bisectGroups(
+			ctx,
+			msgs,
+			groupsOf(
+				msgs,
+				subset,
+				h.orderKey,
+			),
+			results,
+			&budget,
+		)
+		return results
+	}
+
 	h.bisect(
 		ctx,
 		msgs,

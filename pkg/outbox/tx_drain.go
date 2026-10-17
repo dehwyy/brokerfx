@@ -10,9 +10,9 @@ import (
 
 const txDrainMaxFailures = 3
 
-const txDrainSelect = `WITH c AS MATERIALIZED (
+var txDrainSelect = `WITH c AS MATERIALIZED (
 	SELECT id FROM outbox_events
-	WHERE state <> '` + string(StateDone) + `' AND state = '` + string(StatePending) + `'
+	WHERE state <> '` + StateDone.String() + `' AND state = '` + StatePending.String() + `'
 		AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
 	ORDER BY created_at
 	LIMIT ?
@@ -23,9 +23,9 @@ const txDrainSelect = `WITH c AS MATERIALIZED (
 const txDrainReturning = `
 RETURNING o.id, o.topic, o.payload, o.state, o.attempts, o.last_error, o.next_attempt_at, o.headers, o.created_at, o.updated_at`
 
-const txDrainDeleteQuery = txDrainSelect + `DELETE FROM outbox_events o USING c WHERE o.id = c.id` + txDrainReturning
+var txDrainDeleteQuery = txDrainSelect + `DELETE FROM outbox_events o USING c WHERE o.id = c.id` + txDrainReturning
 
-const txDrainDoneQuery = txDrainSelect + `UPDATE outbox_events o SET state = '` + string(StateDone) + `', updated_at = ? FROM c WHERE o.id = c.id` + txDrainReturning
+var txDrainDoneQuery = txDrainSelect + `UPDATE outbox_events o SET state = '` + StateDone.String() + `', updated_at = ? FROM c WHERE o.id = c.id` + txDrainReturning
 
 type drainParked struct {
 	id      string

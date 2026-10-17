@@ -22,11 +22,13 @@ func (c *Consumer) isolate(
 			single,
 		)
 		if !completed {
-			c.watch().OnSettle(SettleEvent{}.with(c.apply(
+			kind, _ := c.apply(
 				ctx,
 				msg,
 				Nak(ErrHandlerPanic),
-			)))
+				0,
+			)
+			c.watch().OnSettle(SettleEvent{}.with(kind))
 			continue
 		}
 

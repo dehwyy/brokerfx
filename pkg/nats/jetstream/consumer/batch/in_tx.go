@@ -105,6 +105,10 @@ func (h *inTx) handle(
 			results,
 			&budget,
 		)
+		h.link(
+			msgs,
+			results,
+		)
 		return results
 	}
 

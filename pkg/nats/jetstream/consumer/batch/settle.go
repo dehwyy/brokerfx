@@ -15,27 +15,56 @@ func (c *Consumer) settle(
 	results []Result,
 ) {
 	var tally SettleEvent
+	returns := make(
+		[]time.Duration,
+		len(msgs),
+	)
 	for i, msg := range msgs {
 		messageResult := Nak(ErrMissingResult)
 		if i < len(results) {
 			messageResult = results[i]
 		}
 
-		tally = tally.with(c.apply(
+		floor := returnFloor(
+			returns,
+			i,
+			messageResult,
+		)
+		kind, delay := c.apply(
 			ctx,
 			msg,
 			messageResult,
-		))
+			floor,
+		)
+		returns[i] = max(
+			delay,
+			floor,
+		)
+		tally = tally.with(kind)
 	}
 
 	c.watch().OnSettle(tally)
+}
+
+func returnFloor(
+	returns []time.Duration,
+	index int,
+	result Result,
+) time.Duration {
+	previous := result.after - 1
+	if previous < 0 || previous >= index {
+		return 0
+	}
+
+	return returns[previous]
 }
 
 func (c *Consumer) apply(
 	ctx context.Context,
 	msg jetstream.Msg,
 	result Result,
-) settleKind {
+	floor time.Duration,
+) (settleKind, time.Duration) {
 	switch result.Verdict {
 	case VerdictAck, VerdictSkip:
 		logSettleErr(
@@ -44,21 +73,22 @@ func (c *Consumer) apply(
 			msg.Ack(),
 		)
 		if result.Verdict == VerdictSkip {
-			return settledSkip
+			return settledSkip, 0
 		}
-		return settledAck
+		return settledAck, 0
 	case VerdictTerm:
 		c.sendPoison(
 			ctx,
 			msg,
 			result.Err,
 		)
-		return settledPoison
+		return settledPoison, 0
 	default:
 		return c.retry(
 			ctx,
 			msg,
 			result,
+			floor,
 		)
 	}
 }
@@ -67,7 +97,8 @@ func (c *Consumer) retry(
 	ctx context.Context,
 	msg jetstream.Msg,
 	result Result,
-) settleKind {
+	floor time.Duration,
+) (settleKind, time.Duration) {
 	if errors.Is(
 		result.Err,
 		ErrOrderBlocked,
@@ -75,6 +106,7 @@ func (c *Consumer) retry(
 		return c.hold(
 			msg,
 			result,
+			floor,
 		)
 	}
 
@@ -87,7 +119,7 @@ func (c *Consumer) retry(
 			msg,
 			result.Err,
 		)
-		return settledPoison
+		return settledPoison, 0
 	}
 
 	delivered := numDelivered(msg)
@@ -101,13 +133,17 @@ func (c *Consumer) retry(
 			msg,
 			reason,
 		)
-		return settledPoison
+		return settledPoison, 0
 	}
 
 	delay := c.delayForDelivery(delivered)
 	if result.Verdict == VerdictNakDelay && result.Delay > 0 {
 		delay = result.Delay
 	}
+	delay = max(
+		delay,
+		floor,
+	)
 
 	log.Warn().
 		Err(result.Err).
@@ -131,7 +167,7 @@ func (c *Consumer) retry(
 		msg.NakWithDelay(delay),
 	)
 
-	return settledRetry
+	return settledRetry, delay
 }
 
 func numDelivered(msg jetstream.Msg) uint64 {

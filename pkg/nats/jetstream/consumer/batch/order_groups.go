@@ -136,6 +136,23 @@ func (h *inTx) block(indexes []int, results []Result) {
 	}
 }
 
+func (h *inTx) link(
+	msgs []jetstream.Msg,
+	results []Result,
+) {
+	last := make(map[string]int)
+	for i, msg := range msgs {
+		if settlesAsAck(results[i].Verdict) {
+			continue
+		}
+		key := h.orderKey(msg)
+		if previous, ok := last[key]; ok {
+			results[i].after = previous + 1
+		}
+		last[key] = i
+	}
+}
+
 func failedIn(group []int, outcome map[int]Result) bool {
 	for _, index := range group {
 		if result, ok := outcome[index]; ok && !settlesAsAck(result.Verdict) {

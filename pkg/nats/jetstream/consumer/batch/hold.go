@@ -1,6 +1,8 @@
 package batch
 
 import (
+	"time"
+
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/rs/zerolog/log"
 )
@@ -8,11 +10,16 @@ import (
 func (c *Consumer) hold(
 	msg jetstream.Msg,
 	result Result,
-) settleKind {
+	floor time.Duration,
+) (settleKind, time.Duration) {
 	delay := c.delayForDelivery(numDelivered(msg))
 	if result.Delay > 0 {
 		delay = result.Delay
 	}
+	delay = max(
+		delay,
+		floor,
+	)
 
 	log.Debug().
 		Str(
@@ -31,5 +38,5 @@ func (c *Consumer) hold(
 		msg.NakWithDelay(delay),
 	)
 
-	return settledBlocked
+	return settledBlocked, delay
 }

@@ -61,6 +61,8 @@ type Config struct {
 
 	TxDrain               bool
 	TxDrainPublishTimeout time.Duration
+
+	FrameSubjects string
 }
 
 func DefaultConfig() Config {

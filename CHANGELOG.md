@@ -4,6 +4,7 @@
 
 - consumer, batch: `Opts.StrictUpdate` (off): a durable update the server rejects fails `New` with `consumer.ErrUpdateRejected` naming the stream, durable, code and err_code instead of a warning and the old config; transient errors are retried for 30s (`ErrBindTransient` after that); the bound filter set is checked (`ErrFilterMismatch`). `BROKERFX_CONSUMER_STRICT_UPDATE=false` turns it off. Without strict the per-message consumer logs the rejection like batch. (MQ-04)
 - consbuilder: `WithFilterSubjects` sets `FilterSubjects` and clears `FilterSubject`, `WithFilterSubject` clears `FilterSubjects`; `consumer.New` and `batch.New` reject both fields at once, an empty or a duplicate filter; start logs print the filters. (MQ-04)
+- frame, outbox, consumer, batch: frames (off). `Config.FrameSubjects` / `BROKERFX_FRAME_SUBJECTS` (NATS patterns) make the batched relay group rows of one subject into one msgpack message with `Brokerfx-Frame: 1`, up to `BROKERFX_FRAME_MAX_ELEMENTS` (16) and `BROKERFX_FRAME_MAX_BYTES` (262144, clamped below `max_payload`); elements keep their own headers, `Nats-Msg-Id` and signature, the frame id is a hash of the element ids. Batch and per-message consumers unpack frames without a switch and settle the frame once after its elements (Ack, or NakWithDelay with the largest delay); a broken frame goes to `OnPoison` whole (new `consumer.Opts.OnPoison`). `frame.Unpack` and `frame.IsFrame` for nats.go code; `outbox.FrameObserver`, `batch.FrameObserver`. (ARCH-03)
 
 ## v0.8.0
 

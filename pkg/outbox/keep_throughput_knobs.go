@@ -6,6 +6,7 @@ func keepThroughputKnobs(dst Config, src Config) Config {
 	dst.LatestOnlyPrefixes = src.LatestOnlyPrefixes
 	dst.TxDrain = src.TxDrain
 	dst.TxDrainPublishTimeout = src.TxDrainPublishTimeout
+	dst.FrameSubjects = src.FrameSubjects
 
 	return dst
 }

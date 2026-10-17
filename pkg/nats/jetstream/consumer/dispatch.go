@@ -10,7 +10,7 @@ func dispatch(
 ) jetstream.MessageHandler {
 	if inFlight == nil {
 		return func(msg jetstream.Msg) {
-			go process(
+			go deliver(
 				msg,
 				opts,
 			)
@@ -28,7 +28,7 @@ func dispatch(
 
 		go func() {
 			defer inFlight.release()
-			process(
+			deliver(
 				msg,
 				opts,
 			)

@@ -138,9 +138,14 @@ func (r *OutboxRelay) publishBatched(
 		return outcomes
 	}
 
-	errs := r.produceAll(
-		ctx,
+	errs := r.publishFramed(
 		producerEvents,
+		func(wire []ProducerEvent) []error {
+			return r.produceAll(
+				ctx,
+				wire,
+			)
+		},
 	)
 	for position, index := range pending {
 		if position < len(errs) {

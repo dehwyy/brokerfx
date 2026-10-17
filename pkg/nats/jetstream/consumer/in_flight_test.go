@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/dehwyy/brokerfx/pkg/nats/jetstream/consumer/middleware"
@@ -27,6 +28,8 @@ type flightMsg struct {
 }
 
 func (m *flightMsg) Subject() string { return "test.flight" }
+
+func (m *flightMsg) Headers() nats.Header { return nil }
 
 func (m *flightMsg) Metadata() (*jetstream.MsgMetadata, error) {
 	if m.metaErr != nil {

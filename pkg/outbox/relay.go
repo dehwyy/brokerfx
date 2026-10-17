@@ -87,6 +87,7 @@ type OutboxRelay struct {
 	paused atomic.Bool
 
 	latestOnly []string
+	frames     *framing
 	startErr   error
 
 	drainFailures int
@@ -148,6 +149,15 @@ func NewRelay(deps RelayDeps) *OutboxRelay {
 		splitList(cfg.LatestOnlyPrefixes),
 		splitList(os.Getenv(envLatestOnlyPrefixes)),
 	)
+	r.frames = resolveFraming(cfg)
+	if r.frames.active() && !cfg.Batched {
+		r.logger.Warn().
+			Strs(
+				"frame_subjects",
+				r.frames.patterns,
+			).
+			Msg("outbox: frames need the batched relay, publishing per message")
+	}
 
 	return r
 }
@@ -220,6 +230,7 @@ func (r *OutboxRelay) Run(ctx context.Context) {
 		Dur("linger", r.config.Linger).
 		Bool("tx_drain", r.config.TxDrain).
 		Dur("tx_drain_publish_timeout", r.config.TxDrainPublishTimeout).
+		Bool("frames", r.frames.active()).
 		Msg("outbox relay started")
 
 	for {
@@ -422,6 +433,7 @@ func (r *OutboxRelay) processBatch(ctx context.Context) {
 	if r.Paused() {
 		return
 	}
+	r.warnLegacyFrames()
 
 	db := r.store.DB()
 	caps := r.ensureSchemaCaps(ctx)

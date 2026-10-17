@@ -142,10 +142,15 @@ func (r *OutboxRelay) drainPublish(
 		return outcomes
 	}
 
-	errs := r.publishWithin(
-		ctx,
+	errs := r.publishFramed(
 		producerEvents,
-		r.config.TxDrainPublishTimeout,
+		func(wire []ProducerEvent) []error {
+			return r.publishWithin(
+				ctx,
+				wire,
+				r.config.TxDrainPublishTimeout,
+			)
+		},
 	)
 	for position, index := range pending {
 		outcomes[index].err = errs[position]

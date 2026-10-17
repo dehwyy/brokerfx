@@ -26,6 +26,8 @@ type Opts struct {
 	// so the process can restart instead of idling without a consumer.
 	OnFatal func(error)
 
+	OnPoison func(ctx context.Context, msg jetstream.Msg, err error) error
+
 	MaxInFlight  int
 	NakBackoff   []time.Duration
 	StrictUpdate bool

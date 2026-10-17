@@ -71,9 +71,18 @@ func (c *Consumer) loop(ctx context.Context) {
 			continue
 		}
 
-		c.processBatch(
-			context.WithoutCancel(ctx),
+		work := context.WithoutCancel(ctx)
+		unpacked := c.unpack(
+			work,
 			msgs,
+		)
+		if len(unpacked) == 0 {
+			continue
+		}
+
+		c.processBatch(
+			work,
+			unpacked,
 		)
 	}
 }

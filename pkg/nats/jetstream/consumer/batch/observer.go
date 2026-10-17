@@ -35,3 +35,12 @@ type SettleEvent struct {
 	Poison  int
 	Blocked int
 }
+
+type FrameObserver interface {
+	OnFrame(event FrameEvent)
+}
+
+type FrameEvent struct {
+	Elements int
+	Err      error
+}

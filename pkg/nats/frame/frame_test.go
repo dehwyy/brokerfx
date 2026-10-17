@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"slices"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -76,7 +77,7 @@ func TestUnpackElementsKeepTheirOwnFields(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i, element := range elements {
-		if element.Subject() != "cmd.a" || !bytes.Equal(element.Data(), []byte{byte(i)}) || element.Headers().Get(jetstream.MsgIDHeader) != string(rune('a'+i)) {
+		if element.Subject() != "cmd.a" || !bytes.Equal(element.Data(), []byte{byte(i)}) || element.Headers().Get(jetstream.MsgIDHeader) != string(rune('a'+i)) || element.Headers().Get(HeaderIndex) != strconv.Itoa(i) {
 			t.Fatalf("element %d: %q %v %v", i, element.Subject(), element.Data(), element.Headers())
 		}
 		metadata, err := element.Metadata()

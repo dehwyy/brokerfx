@@ -62,6 +62,10 @@ func Unpack(
 		if headers == nil {
 			headers = nats.Header{}
 		}
+		headers.Set(
+			HeaderIndex,
+			strconv.Itoa(i),
+		)
 		msgs = append(
 			msgs,
 			&elementMsg{

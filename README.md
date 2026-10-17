@@ -313,6 +313,13 @@ drainer.Drain() // waits for all consumers to finish in-flight messages
 
 **Several filters (v0.9.0).** `consbuilder.WithFilterSubjects(subjects...)` sets `FilterSubjects` and clears `FilterSubject`; `WithFilterSubject` sets one filter and clears `FilterSubjects`, so the last call wins. `consumer.New` and `batch.New` reject a config with both fields, an empty filter or a duplicate filter (`ErrInvalidOpts` of each package, wrapping `consumer.ErrInvalidFilters`); overlap checks stay with the server. The start log prints the bound filters as `filters`. A live durable moves from `FilterSubject` to `FilterSubjects` by a normal update and keeps its ack floor; `[order.updated, order.updated.>]` receives both the old and the new subject form.
 
+**Pinned priority group and partition durables (v0.9.0).** `consbuilder.WithPinnedGroup(group, ttl)` sets `PriorityPolicy: pinned_client`, one priority group and `PinnedTTL` (0 = server default 2m). The server serves one client of the group at a time and moves the pin to another client after `PinnedTTL` without pull requests from the pinned one.
+
+- `batch.New` fetches with `FetchPriorityGroup`; a lost pin (`ErrPinIDMismatch`) is an empty fetch with a debug log. It requires one group matching `[a-zA-Z0-9/_=-]{1,16}` and `PinnedTTL > AckWait + 5s idle poll + LingerMax`, otherwise `ErrInvalidOpts` wrapping `consumer.ErrInvalidPinned`. `consumer.New` consumes with `PullPriorityGroup`, needs `PinnedTTL` above its 30s pull expiry and logs a lost pin at debug instead of a consume warning.
+- `consbuilder.PartitionConfigs(consbuilder.Partitions{Base, Count, Filters, Group, PinnedTTL})` returns one config per partition `i`: name and durable `<base>-p<i>`, `FilterSubjects = Filters(i)` (the service builds them from its proto partition helpers; the library knows no hash), `AckExplicit`, `DeliverAll`, pinned. Filters of different partitions must not overlap as NATS patterns, every partition needs a filter, otherwise `ErrInvalidPartitions`. `consbuilder.FromConfig(cfg)` turns a config into a builder for `consumer.New` and `batch.New`; nats.go code can create the configs directly.
+- Pinned is not exclusive at a pin change: messages the old client took and did not ack come back to the new client after `AckWait`, so a handler that committed but did not ack is run twice. Keep the database deduplication (`processed_messages`, business keys, CAS) on partitioned consumers.
+- The server (2.14) updates `PriorityPolicy` of a live durable in place, none → pinned and back, keeping the ack floor; a `StrictUpdate` consumer accepts that update.
+
 #### Consume-side idempotency
 
 `WithIdempotency` is an **opt-in** handler wrapper that dedups at consume time within
@@ -1178,6 +1185,7 @@ func main() {
 | Replicas | `0` = inherit the stream (`WithReplicas(n)`, reset to `0` when it does not fit) |
 | StrictUpdate | off; `true` fails `New` on a rejected update (`BROKERFX_CONSUMER_STRICT_UPDATE=false` turns it off) |
 | Filters | one `FilterSubject`; `WithFilterSubjects` for several, never both |
+| Priority | none; `WithPinnedGroup(group, ttl)` for pinned, `PartitionConfigs` for `<durable>-p<i>` |
 | Pull: Heartbeat | `10 seconds` |
 | Batch: Max / Linger / Pipeline | `16` / `5ms` / `1` (`BROKERFX_BATCH_MAX`, `BROKERFX_BATCH_LINGER`, `BROKERFX_BATCH_PIPELINE`) |
 | Batch: MinBatch / LingerMax | off (`BROKERFX_BATCH_MIN`, `BROKERFX_BATCH_LINGER_MAX`) |

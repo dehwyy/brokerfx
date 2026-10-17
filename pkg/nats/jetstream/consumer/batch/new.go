@@ -70,6 +70,7 @@ func New(opts Opts) (*Consumer, error) {
 		lingerMax:      s.lingerMax,
 		pipeline:       s.pipeline,
 		fetcher:        bound,
+		group:          durable.PinnedGroup(actual),
 	}
 	c.start()
 
@@ -85,6 +86,10 @@ func New(opts Opts) (*Consumer, error) {
 		Strs(
 			"filters",
 			durable.Filters(actual),
+		).
+		Str(
+			"pinned_group",
+			c.group,
 		).
 		Int(
 			"max",

@@ -22,6 +22,7 @@ type Consumer struct {
 	now            func() time.Time
 	pipeline       int
 	fetcher        fetcher
+	group          string
 	loopCtx        context.Context
 	cancel         context.CancelFunc
 	loops          sync.WaitGroup

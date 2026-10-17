@@ -3,6 +3,7 @@ package batch
 import (
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -35,6 +36,10 @@ func TestValidate(t *testing.T) {
 		{name: "duplicate filters", cfg: jetstream.ConsumerConfig{AckPolicy: jetstream.AckExplicitPolicy, FilterSubjects: []string{"b", "b"}}, wantErr: ErrInvalidOpts},
 		{name: "wide filters", cfg: jetstream.ConsumerConfig{AckPolicy: jetstream.AckExplicitPolicy, FilterSubjects: []string{"b", "b.>"}}, wantPending: 32},
 		{name: "unlimited attempts and deliver", cfg: jetstream.ConsumerConfig{AckPolicy: jetstream.AckExplicitPolicy, MaxDeliver: -1}, attempts: -1, wantPending: 32},
+		{name: "pinned ttl above ack wait and idle poll", cfg: jetstream.ConsumerConfig{AckPolicy: jetstream.AckExplicitPolicy, AckWait: 10 * time.Second, PriorityPolicy: jetstream.PriorityPolicyPinned, PriorityGroups: []string{"p"}, PinnedTTL: 16 * time.Second}, wantPending: 32},
+		{name: "pinned ttl not above ack wait and idle poll", cfg: jetstream.ConsumerConfig{AckPolicy: jetstream.AckExplicitPolicy, AckWait: 10 * time.Second, PriorityPolicy: jetstream.PriorityPolicyPinned, PriorityGroups: []string{"p"}, PinnedTTL: 15 * time.Second}, wantErr: ErrInvalidOpts},
+		{name: "pinned default ttl", cfg: jetstream.ConsumerConfig{AckPolicy: jetstream.AckExplicitPolicy, PriorityPolicy: jetstream.PriorityPolicyPinned, PriorityGroups: []string{"p"}}, wantPending: 32},
+		{name: "pinned two groups", cfg: jetstream.ConsumerConfig{AckPolicy: jetstream.AckExplicitPolicy, PriorityPolicy: jetstream.PriorityPolicyPinned, PriorityGroups: []string{"p", "q"}}, wantErr: ErrInvalidOpts},
 	}
 
 	for _, tc := range cases {

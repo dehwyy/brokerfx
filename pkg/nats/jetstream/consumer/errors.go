@@ -12,4 +12,5 @@ var (
 	ErrBindTransient  = durable.ErrBindTransient
 	ErrFilterMismatch = durable.ErrFilterMismatch
 	ErrInvalidFilters = durable.ErrInvalidFilters
+	ErrInvalidPinned  = durable.ErrInvalidPinned
 )

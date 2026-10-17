@@ -37,6 +37,14 @@ type Opts struct {
 
 func consumeErrHandler(opts Opts) jetstream.ConsumeErrHandlerFunc {
 	return func(_ jetstream.ConsumeContext, err error) {
+		if errors.Is(
+			err,
+			jetstream.ErrPinIDMismatch,
+		) {
+			log.Debug().Err(err).Msg("jetstream consume lost the pin, another pod holds the group")
+			return
+		}
+
 		fatal := errors.Is(err, jetstream.ErrConsumerDeleted) || errors.Is(err, jetstream.ErrConsumerNotFound)
 
 		log.Warn().Err(err).Bool("fatal", fatal).Msg("jetstream consume error")
@@ -97,14 +105,16 @@ func New(opts Opts) (*Consumer, error) {
 			Msg("jetstream consumer dispatch bounded")
 	}
 
+	group := durable.PinnedGroup(consumer.CachedInfo().Config)
 	consumeCtx, err := consumer.Consume(
 		dispatch(
 			opts,
 			inFlight,
 		),
-		jetstream.PullMaxMessages(pullMaxMessages(opts.MaxInFlight)),
-		jetstream.PullHeartbeat(10*time.Second),
-		jetstream.ConsumeErrHandler(consumeErrHandler(opts)),
+		consumeOpts(
+			opts,
+			group,
+		)...,
 	)
 
 	if err != nil {
@@ -124,6 +134,10 @@ func New(opts Opts) (*Consumer, error) {
 		Strs(
 			"filters",
 			durable.Filters(consumer.CachedInfo().Config),
+		).
+		Str(
+			"pinned_group",
+			group,
 		).
 		Msg("jetstream consumer started")
 

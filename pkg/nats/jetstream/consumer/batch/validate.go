@@ -47,11 +47,22 @@ func validate(
 		)
 	}
 
+	ackWait := cfg.AckWait
+	if ackWait <= 0 {
+		ackWait = defaultAckWait
+	}
+	if err := durable.ValidatePinned(
+		cfg,
+		ackWait+idlePoll+s.lingerMax,
+	); err != nil {
+		return cfg, fmt.Errorf(
+			"%w: %w",
+			ErrInvalidOpts,
+			err,
+		)
+	}
+
 	if s.lingerMax > 0 {
-		ackWait := cfg.AckWait
-		if ackWait <= 0 {
-			ackWait = defaultAckWait
-		}
 		if s.lingerMax >= ackWait/4 {
 			return cfg, fmt.Errorf(
 				"%w: LingerMax %s, want below AckWait/4 %s",

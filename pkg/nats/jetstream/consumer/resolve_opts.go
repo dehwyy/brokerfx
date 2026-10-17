@@ -14,6 +14,7 @@ import (
 const (
 	envMaxInFlight = "BROKERFX_CONSUMER_MAX_IN_FLIGHT"
 	envNakBackoff  = "BROKERFX_CONSUMER_NAK_BACKOFF"
+	pullExpiry     = 30 * time.Second
 )
 
 func resolveOpts(opts Opts) (Opts, error) {
@@ -36,7 +37,18 @@ func resolveOpts(opts Opts) (Opts, error) {
 	}
 
 	if opts.ConsumerOptsBuilder != nil {
-		if err := durable.ValidateFilters(opts.ConsumerOptsBuilder.Build()); err != nil {
+		cfg := opts.ConsumerOptsBuilder.Build()
+		if err := durable.ValidateFilters(cfg); err != nil {
+			return opts, fmt.Errorf(
+				"%w: %w",
+				ErrInvalidOpts,
+				err,
+			)
+		}
+		if err := durable.ValidatePinned(
+			cfg,
+			pullExpiry,
+		); err != nil {
 			return opts, fmt.Errorf(
 				"%w: %w",
 				ErrInvalidOpts,

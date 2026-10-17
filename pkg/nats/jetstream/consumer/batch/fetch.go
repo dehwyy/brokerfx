@@ -7,6 +7,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+	"github.com/rs/zerolog/log"
 )
 
 const idlePoll = 5 * time.Second
@@ -123,7 +124,7 @@ func (c *Consumer) collect(
 ) ([]jetstream.Msg, error) {
 	fetched, err := c.fetcher.Fetch(
 		count,
-		opt,
+		c.fetchOpts(opt)...,
 	)
 	if err != nil {
 		return nil, err
@@ -142,10 +143,37 @@ func (c *Consumer) collect(
 	}
 
 	if err := fetched.Error(); err != nil && !isQuietFetchErr(err) {
+		if errors.Is(
+			err,
+			jetstream.ErrPinIDMismatch,
+		) {
+			log.Debug().
+				Str(
+					"pinned_group",
+					c.group,
+				).
+				Int(
+					"fetched",
+					len(msgs),
+				).
+				Msg("batch fetch lost the pin, another pod holds the group")
+			return msgs, nil
+		}
 		return msgs, err
 	}
 
 	return msgs, nil
+}
+
+func (c *Consumer) fetchOpts(opt jetstream.FetchOpt) []jetstream.FetchOpt {
+	if c.group == "" {
+		return []jetstream.FetchOpt{opt}
+	}
+
+	return []jetstream.FetchOpt{
+		opt,
+		jetstream.FetchPriorityGroup(c.group),
+	}
 }
 
 func isQuietFetchErr(err error) bool {

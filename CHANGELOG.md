@@ -3,6 +3,7 @@
 ## v0.9.0
 
 - consumer, batch: `Opts.StrictUpdate` (off): a durable update the server rejects fails `New` with `consumer.ErrUpdateRejected` naming the stream, durable, code and err_code instead of a warning and the old config; transient errors are retried for 30s (`ErrBindTransient` after that); the bound filter set is checked (`ErrFilterMismatch`). `BROKERFX_CONSUMER_STRICT_UPDATE=false` turns it off. Without strict the per-message consumer logs the rejection like batch. (MQ-04)
+- consbuilder: `WithFilterSubjects` sets `FilterSubjects` and clears `FilterSubject`, `WithFilterSubject` clears `FilterSubjects`; `consumer.New` and `batch.New` reject both fields at once, an empty or a duplicate filter; start logs print the filters. (MQ-04)
 
 ## v0.8.0
 

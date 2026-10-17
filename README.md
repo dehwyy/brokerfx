@@ -311,6 +311,8 @@ drainer.Drain() // waits for all consumers to finish in-flight messages
 - An update keeps the durable's `DeliverPolicy`, `OptStartSeq` and `OptStartTime` on both paths, so a changed start option does not trigger a rejection.
 - `BROKERFX_CONSUMER_STRICT_UPDATE=false` (or `0`, `off`, `no`) turns strict off for the process as a rollback switch; the env cannot turn it on. An unknown value logs a warning and keeps the code value.
 
+**Several filters (v0.9.0).** `consbuilder.WithFilterSubjects(subjects...)` sets `FilterSubjects` and clears `FilterSubject`; `WithFilterSubject` sets one filter and clears `FilterSubjects`, so the last call wins. `consumer.New` and `batch.New` reject a config with both fields, an empty filter or a duplicate filter (`ErrInvalidOpts` of each package, wrapping `consumer.ErrInvalidFilters`); overlap checks stay with the server. The start log prints the bound filters as `filters`. A live durable moves from `FilterSubject` to `FilterSubjects` by a normal update and keeps its ack floor; `[order.updated, order.updated.>]` receives both the old and the new subject form.
+
 #### Consume-side idempotency
 
 `WithIdempotency` is an **opt-in** handler wrapper that dedups at consume time within
@@ -1164,6 +1166,7 @@ func main() {
 | NakBackoff | off (`BROKERFX_CONSUMER_NAK_BACKOFF=true` or a list such as `1s,2s,5s`) |
 | Replicas | `0` = inherit the stream (`WithReplicas(n)`, reset to `0` when it does not fit) |
 | StrictUpdate | off; `true` fails `New` on a rejected update (`BROKERFX_CONSUMER_STRICT_UPDATE=false` turns it off) |
+| Filters | one `FilterSubject`; `WithFilterSubjects` for several, never both |
 | Pull: Heartbeat | `10 seconds` |
 | Batch: Max / Linger / Pipeline | `16` / `5ms` / `1` (`BROKERFX_BATCH_MAX`, `BROKERFX_BATCH_LINGER`, `BROKERFX_BATCH_PIPELINE`) |
 | Batch: MinBatch / LingerMax | off (`BROKERFX_BATCH_MIN`, `BROKERFX_BATCH_LINGER_MAX`) |

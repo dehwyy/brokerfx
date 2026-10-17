@@ -144,6 +144,28 @@ func TestResolve(t *testing.T) {
 		t.Fatalf("handler timeout equal to lease: want ErrInvalidConfig got %v", err)
 	}
 
+	_, err = resolve(Config{
+		Lease:          60 * time.Second,
+		HandlerTimeout: 59 * time.Second,
+	})
+	if !errors.Is(
+		err,
+		ErrInvalidConfig,
+	) {
+		t.Fatalf("handler timeout leaves no room for the delete: want ErrInvalidConfig got %v", err)
+	}
+
+	s, err = resolve(Config{
+		Lease:          time.Second,
+		HandlerTimeout: 500 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.handlerTimeout+s.removeTimeout() >= s.lease || s.removeTimeout() != 250*time.Millisecond {
+		t.Fatalf("remove timeout %s for %+v", s.removeTimeout(), s)
+	}
+
 	t.Setenv(
 		envPoll,
 		"soon",

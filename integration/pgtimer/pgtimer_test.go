@@ -459,7 +459,7 @@ func TestPgTimer(t *testing.T) {
 			cfg := pgtimer.Config{
 				Table:          table,
 				Lease:          time.Second,
-				HandlerTimeout: 800 * time.Millisecond,
+				HandlerTimeout: 500 * time.Millisecond,
 				Poll:           50 * time.Millisecond,
 				Batch:          8,
 				Concurrency:    4,

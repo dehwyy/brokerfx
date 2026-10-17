@@ -8,8 +8,6 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-const removeTimeout = 5 * time.Second
-
 func (p *Poller) fire(timer Timer) {
 	started := time.Now()
 	ctx, cancel := context.WithTimeout(
@@ -78,7 +76,7 @@ func call(
 func (p *Poller) remove(timer Timer) (bool, error) {
 	ctx, cancel := context.WithTimeout(
 		context.Background(),
-		removeTimeout,
+		p.settings.removeTimeout(),
 	)
 	defer cancel()
 

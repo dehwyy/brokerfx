@@ -780,7 +780,7 @@ pgtimer.RegisterLifecycle(lc, poller)
 
 - **Table.** Column names are plain identifiers (`[A-Za-z_][A-Za-z0-9_]*`, table may be `schema.name`) and are quoted; `CreatedAt` and `UpdatedAt` are optional. The service creates the table and an index on `due_at`.
 - **Claim.** One statement: `WITH due AS MATERIALIZED (SELECT ctid ... WHERE due_at <= now() AND name IN (registered names) ORDER BY due_at, created_at LIMIT free slots FOR UPDATE SKIP LOCKED) UPDATE ... SET due_at = now() + lease, updated_at = now() ... RETURNING` the original `due_at`, the lease `due_at` and the database `now()`. Two pollers never take the same row; a poller that dies gives the row back when the lease ends. Rows with names this poller did not register are not touched.
-- **Fire.** A pool of `Concurrency` workers; each handler runs with `HandlerTimeout`, which must be below `Lease`, and a panic is recovered as `ErrHandlerPanic`. After success the row is deleted by key, name, attempt and the exact lease `due_at`, so a timer that the handler or the business code rescheduled meanwhile (new `due_at`, name or attempt) is kept. A failed handler leaves the row; it fires again when the lease ends, which is the retry delay.
+- **Fire.** A pool of `Concurrency` workers; each handler runs with `HandlerTimeout`, which must be at most `Lease / 2`, and a panic is recovered as `ErrHandlerPanic`. The delete after the handler has `min(5s, Lease / 4)`, so handler and delete end before the lease. The handler must return on `ctx.Done()`: a handler that ignores its context outlives the lease and the timer fires again on another poller in parallel. After success the row is deleted by key, name, attempt and the exact lease `due_at`, so a timer that the handler or the business code rescheduled meanwhile (new `due_at`, name or attempt) is kept. A failed handler leaves the row; it fires again when the lease ends, which is the retry delay.
 - **Loop.** A poll every `Poll`; a full batch polls again at once. `Stop(ctx)` stops claiming and waits for running handlers within `ctx`; after the deadline their context is cancelled and unfinished rows fire again after the lease. Nothing claimed is lost.
 - **Observer.** `OnClaim(ClaimEvent{Limit, Claimed, Duration, Err})` and `OnFire(FireEvent{Name, Lag, Duration, Deleted, Err})`, where `Lag` is the database `now()` at claim minus the original `due_at`.
 - **Delivery.** At-least-once: a handler that outlives the lease, or a lost delete, fires again, so handlers re-check the state under a lock.
@@ -1197,7 +1197,7 @@ func main() {
 | Setting | Default | Env |
 |---|---|---|
 | Lease | `60s` | `BROKERFX_PGTIMER_LEASE` |
-| HandlerTimeout | `30s`, below `Lease` | `BROKERFX_PGTIMER_HANDLER_TIMEOUT` |
+| HandlerTimeout | `30s`, at most `Lease / 2` | `BROKERFX_PGTIMER_HANDLER_TIMEOUT` |
 | Poll | `1s` | `BROKERFX_PGTIMER_POLL` |
 | Batch | `100` (1..1000) | `BROKERFX_PGTIMER_BATCH` |
 | Concurrency | `8` (1..256) | `BROKERFX_PGTIMER_CONCURRENCY` |

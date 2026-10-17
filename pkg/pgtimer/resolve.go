@@ -22,6 +22,8 @@ const (
 
 	limitBatch       = 1000
 	limitConcurrency = 256
+
+	maxRemoveTimeout = 5 * time.Second
 )
 
 type settings struct {
@@ -99,12 +101,13 @@ func (s settings) validate() error {
 			s.handlerTimeout,
 			s.poll,
 		)
-	case s.handlerTimeout >= s.lease:
+	case s.handlerTimeout > s.lease/2:
 		return fmt.Errorf(
-			"%w: HandlerTimeout %s, want below Lease %s",
+			"%w: HandlerTimeout %s, want at most Lease/2 %s: the delete after the handler takes up to %s more and must end before the lease",
 			ErrInvalidConfig,
 			s.handlerTimeout,
-			s.lease,
+			s.lease/2,
+			s.removeTimeout(),
 		)
 	case s.batch < 1 || s.batch > limitBatch:
 		return fmt.Errorf(
@@ -123,6 +126,13 @@ func (s settings) validate() error {
 	}
 
 	return nil
+}
+
+func (s settings) removeTimeout() time.Duration {
+	return min(
+		maxRemoveTimeout,
+		s.lease/4,
+	)
 }
 
 func resolveDuration(

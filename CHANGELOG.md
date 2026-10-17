@@ -14,7 +14,7 @@
 - outbox: optional `Message.Headers` per element in `SaveMessages` and `SaveMessage`; the element wins over `WithHeaders`, reserved headers are checked per element. (SVC-02)
 - producer: `ProduceSync(ctx, event, opts...)` waits for the PubAck within `ctx` and returns the publish error. (ERR-43)
 - jetstream: `BROKERFX_JS_PUBLISH_ASYNC_MAX_PENDING` sets the async publish window (unset = nats.go default). (ERR-83)
-- pgtimer: new package. Lease-claim poller over a timer table the service owns (`New`, `Handle`, `Start`, `Stop`, `RegisterLifecycle`, `Observer`), delete after the handler by key, name, attempt and the exact lease `due_at`; env `BROKERFX_PGTIMER_LEASE` (60s), `_HANDLER_TIMEOUT` (30s), `_POLL` (1s), `_BATCH` (100), `_CONCURRENCY` (8). (MQ-02)
+- pgtimer: new package. Lease-claim poller over a timer table the service owns (`New`, `Handle`, `Start`, `Stop`, `RegisterLifecycle`, `Observer`), delete after the handler by key, name, attempt and the exact lease `due_at`; env `BROKERFX_PGTIMER_LEASE` (60s), `_HANDLER_TIMEOUT` (30s, at most `Lease / 2`, the delete gets `min(5s, Lease / 4)` so both end before the lease), `_POLL` (1s), `_BATCH` (100), `_CONCURRENCY` (8). (MQ-02)
 - timedactor: `Hold` keeps the later of the original deadline and `now + MaxHoldDuration`; before, a timer due in 10 minutes was moved to 15 seconds. (ERR-39) README documents the at-most-once callback of timedactor. (ERR-70)
 - With the new fields and env unset, behaviour is the same as in v0.7.0 except the `Hold` deadline fix and the `= ANY` id lists.
 

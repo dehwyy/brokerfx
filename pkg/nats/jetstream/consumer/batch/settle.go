@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/dehwyy/brokerfx/pkg/nats/frame"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/rs/zerolog/log"
 )
@@ -15,6 +16,7 @@ func (c *Consumer) settle(
 	results []Result,
 ) {
 	var tally SettleEvent
+	starts := frameStarts(msgs)
 	returns := make(
 		[]time.Duration,
 		len(msgs),
@@ -27,6 +29,7 @@ func (c *Consumer) settle(
 
 		floor := returnFloor(
 			returns,
+			starts,
 			i,
 			messageResult,
 		)
@@ -36,7 +39,9 @@ func (c *Consumer) settle(
 			messageResult,
 			floor,
 		)
-		returns[i] = max(
+		start := starts[i]
+		returns[start] = max(
+			returns[start],
 			delay,
 			floor,
 		)
@@ -46,8 +51,27 @@ func (c *Consumer) settle(
 	c.watch().OnSettle(tally)
 }
 
+func frameStarts(msgs []jetstream.Msg) []int {
+	starts := make(
+		[]int,
+		len(msgs),
+	)
+	for i := range msgs {
+		starts[i] = i
+		if i > 0 && frame.SameFrame(
+			msgs[i-1],
+			msgs[i],
+		) {
+			starts[i] = starts[i-1]
+		}
+	}
+
+	return starts
+}
+
 func returnFloor(
 	returns []time.Duration,
+	starts []int,
 	index int,
 	result Result,
 ) time.Duration {
@@ -56,7 +80,7 @@ func returnFloor(
 		return 0
 	}
 
-	return returns[previous]
+	return returns[starts[previous]]
 }
 
 func (c *Consumer) apply(

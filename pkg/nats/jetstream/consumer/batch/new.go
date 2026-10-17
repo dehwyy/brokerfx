@@ -82,6 +82,10 @@ func New(opts Opts) (*Consumer, error) {
 			"consumer",
 			durable.Name(actual),
 		).
+		Strs(
+			"filters",
+			durable.Filters(actual),
+		).
 		Int(
 			"max",
 			s.max,

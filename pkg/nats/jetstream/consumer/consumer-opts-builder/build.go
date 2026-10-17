@@ -43,6 +43,7 @@ func (b *ConsumerOptsBuilder) WithFilterSubject(
 	filterSubject string,
 ) *ConsumerOptsBuilder {
 	b.config.FilterSubject = filterSubject
+	b.config.FilterSubjects = nil
 	return b
 }
 

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	consumeroptsbuilder "github.com/dehwyy/brokerfx/pkg/nats/jetstream/consumer/consumer-opts-builder"
+	"github.com/dehwyy/brokerfx/pkg/nats/jetstream/consumer/internal/durable"
 	"github.com/dehwyy/brokerfx/pkg/nats/jetstream/consumer/middleware"
 	"github.com/dehwyy/brokerfx/pkg/nats/jetstream/stream"
 	"github.com/nats-io/nats.go/jetstream"
@@ -108,6 +109,21 @@ func New(opts Opts) (*Consumer, error) {
 		log.Error().Err(err).Msg("failed to start jetstream consume")
 		panic(err)
 	}
+
+	log.Info().
+		Str(
+			"stream",
+			opts.Stream.Name(),
+		).
+		Str(
+			"consumer",
+			durable.Name(cfg),
+		).
+		Strs(
+			"filters",
+			durable.Filters(consumer.CachedInfo().Config),
+		).
+		Msg("jetstream consumer started")
 
 	return &Consumer{
 		consumeCtx: consumeCtx,

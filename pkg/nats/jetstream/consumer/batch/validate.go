@@ -3,6 +3,7 @@ package batch
 import (
 	"fmt"
 
+	"github.com/dehwyy/brokerfx/pkg/nats/jetstream/consumer/internal/durable"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -15,6 +16,14 @@ func validate(
 			"%w: AckPolicy %s, want explicit",
 			ErrInvalidOpts,
 			cfg.AckPolicy,
+		)
+	}
+
+	if err := durable.ValidateFilters(cfg); err != nil {
+		return cfg, fmt.Errorf(
+			"%w: %w",
+			ErrInvalidOpts,
+			err,
 		)
 	}
 

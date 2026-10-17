@@ -11,4 +11,5 @@ var (
 	ErrUpdateRejected = durable.ErrUpdateRejected
 	ErrBindTransient  = durable.ErrBindTransient
 	ErrFilterMismatch = durable.ErrFilterMismatch
+	ErrInvalidFilters = durable.ErrInvalidFilters
 )

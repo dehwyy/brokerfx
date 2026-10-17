@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dehwyy/brokerfx/pkg/nats/jetstream/consumer/internal/durable"
 	"github.com/rs/zerolog/log"
 )
 
@@ -30,6 +31,16 @@ func resolveOpts(opts Opts) (Opts, error) {
 				ErrInvalidOpts,
 				i,
 				delay,
+			)
+		}
+	}
+
+	if opts.ConsumerOptsBuilder != nil {
+		if err := durable.ValidateFilters(opts.ConsumerOptsBuilder.Build()); err != nil {
+			return opts, fmt.Errorf(
+				"%w: %w",
+				ErrInvalidOpts,
+				err,
 			)
 		}
 	}

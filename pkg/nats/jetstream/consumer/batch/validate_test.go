@@ -31,6 +31,9 @@ func TestValidate(t *testing.T) {
 		{name: "max deliver equals attempts", cfg: jetstream.ConsumerConfig{AckPolicy: jetstream.AckExplicitPolicy, MaxDeliver: 6}, wantErr: ErrMaxDeliver},
 		{name: "max deliver unlimited", cfg: jetstream.ConsumerConfig{AckPolicy: jetstream.AckExplicitPolicy, MaxDeliver: -1}, wantPending: 32},
 		{name: "unlimited attempts need unlimited deliver", cfg: jetstream.ConsumerConfig{AckPolicy: jetstream.AckExplicitPolicy, MaxDeliver: 100}, attempts: -1, wantErr: ErrMaxDeliver},
+		{name: "both filter fields", cfg: jetstream.ConsumerConfig{AckPolicy: jetstream.AckExplicitPolicy, FilterSubject: "a", FilterSubjects: []string{"b"}}, wantErr: ErrInvalidOpts},
+		{name: "duplicate filters", cfg: jetstream.ConsumerConfig{AckPolicy: jetstream.AckExplicitPolicy, FilterSubjects: []string{"b", "b"}}, wantErr: ErrInvalidOpts},
+		{name: "wide filters", cfg: jetstream.ConsumerConfig{AckPolicy: jetstream.AckExplicitPolicy, FilterSubjects: []string{"b", "b.>"}}, wantPending: 32},
 		{name: "unlimited attempts and deliver", cfg: jetstream.ConsumerConfig{AckPolicy: jetstream.AckExplicitPolicy, MaxDeliver: -1}, attempts: -1, wantPending: 32},
 	}
 

@@ -41,6 +41,10 @@ var CoreModule = fx.Module("outbox-core",
 func registerRelayLifecycle(lc fx.Lifecycle, relay *OutboxRelay) {
 	lc.Append(fx.Hook{
 		OnStart: func(_ context.Context) error {
+			if relay.startErr != nil {
+				return relay.startErr
+			}
+
 			ctx, cancel := context.WithCancel(context.Background())
 			relay.cancel = cancel
 

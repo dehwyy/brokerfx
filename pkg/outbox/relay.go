@@ -87,6 +87,10 @@ type OutboxRelay struct {
 	paused atomic.Bool
 
 	latestOnly []string
+	startErr   error
+
+	drainFailures int
+	drainOff      bool
 
 	cleaning  atomic.Bool
 	cleanupWG sync.WaitGroup
@@ -139,6 +143,7 @@ func NewRelay(deps RelayDeps) *OutboxRelay {
 		done:           make(chan struct{}),
 	}
 	r.paused.Store(cfg.Paused || envPaused())
+	r.startErr = validateThroughput(cfg)
 	r.latestOnly = latestOnlyPrefixes(
 		splitList(cfg.LatestOnlyPrefixes),
 		splitList(os.Getenv(envLatestOnlyPrefixes)),
@@ -164,6 +169,11 @@ func (r *OutboxRelay) Paused() bool {
 // before returning, ensuring graceful shutdown.
 func (r *OutboxRelay) Run(ctx context.Context) {
 	defer close(r.done)
+
+	if r.startErr != nil {
+		r.logger.Error().Err(r.startErr).Msg("outbox relay not started")
+		return
+	}
 
 	caps := r.ensureSchemaCaps(ctx)
 	if !caps.V2 {
@@ -208,6 +218,8 @@ func (r *OutboxRelay) Run(ctx context.Context) {
 		Str("mode", string(r.config.Mode)).
 		Bool("batched", r.config.Batched).
 		Dur("linger", r.config.Linger).
+		Bool("tx_drain", r.config.TxDrain).
+		Dur("tx_drain_publish_timeout", r.config.TxDrainPublishTimeout).
 		Msg("outbox relay started")
 
 	for {

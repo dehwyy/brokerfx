@@ -13,14 +13,17 @@ import (
 var ErrSchemaOutdated = errors.New("outbox: schema missing v2 columns, run outbox.AutoMigrate")
 
 type schemaCaps struct {
-	V2      bool
-	Retries bool
-	IDType  string
+	V2        bool
+	Retries   bool
+	IDType    string
+	DrainSafe bool
 }
 
 const v2ColumnsQuery = `select count(*) from information_schema.columns where table_schema = current_schema() and table_name = 'outbox_events' and column_name in ('attempts', 'last_error', 'next_attempt_at', 'headers')`
 
 const retriesTableQuery = `select to_regclass('outbox_retries')::text`
+
+const strictColumnsQuery = `select count(*) from information_schema.columns where table_schema = current_schema() and table_name = 'outbox_events' and is_nullable = 'NO' and column_default is null and column_name not in ('id', 'topic', 'payload', 'state', 'attempts', 'last_error', 'next_attempt_at', 'headers', 'created_at', 'updated_at')`
 
 const idTypeQuery = `select data_type from information_schema.columns where table_schema = current_schema() and table_name = 'outbox_events' and column_name = 'id'`
 
@@ -40,10 +43,16 @@ func detectSchema(ctx context.Context, db *gorm.DB) (schemaCaps, error) {
 		return schemaCaps{}, err
 	}
 
+	var strictColumns int64
+	if err := db.WithContext(ctx).Raw(strictColumnsQuery).Scan(&strictColumns).Error; err != nil {
+		return schemaCaps{}, err
+	}
+
 	return schemaCaps{
-		V2:      v2Columns == 4,
-		Retries: retriesTable.Valid,
-		IDType:  arrayElementType(idType.String),
+		V2:        v2Columns == 4,
+		Retries:   retriesTable.Valid,
+		IDType:    arrayElementType(idType.String),
+		DrainSafe: strictColumns == 0,
 	}, nil
 }
 

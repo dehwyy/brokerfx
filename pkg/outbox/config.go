@@ -58,6 +58,9 @@ type Config struct {
 	PendingGaugeInterval time.Duration
 	CleanupBatch         int
 	LatestOnlyPrefixes   string
+
+	TxDrain               bool
+	TxDrainPublishTimeout time.Duration
 }
 
 func DefaultConfig() Config {

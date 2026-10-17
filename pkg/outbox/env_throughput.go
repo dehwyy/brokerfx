@@ -1,6 +1,7 @@
 package outbox
 
 import (
+	"errors"
 	"os"
 	"strconv"
 	"strings"
@@ -13,7 +14,14 @@ const (
 	envPendingGaugeInterval = "BROKERFX_OUTBOX_PENDING_GAUGE_INTERVAL"
 	envCleanupBatch         = "BROKERFX_OUTBOX_CLEANUP_BATCH"
 	envLatestOnlyPrefixes   = "BROKERFX_OUTBOX_LATEST_ONLY_PREFIXES"
+	envTxDrain              = "BROKERFX_OUTBOX_TX_DRAIN"
+	envTxDrainTimeout       = "BROKERFX_OUTBOX_TX_DRAIN_PUBLISH_TIMEOUT"
+
+	defaultTxDrainPublishTimeout = 2 * time.Second
+	maxTxDrainPublishTimeout     = 25 * time.Second
 )
+
+var ErrTxDrainPublishTimeout = errors.New("outbox: tx-drain publish timeout must be below 25s")
 
 func splitList(value string) []string {
 	value = strings.TrimSpace(value)
@@ -70,6 +78,31 @@ func resolveThroughput(cfg Config) Config {
 	if value, ok := envNonNegativeInt(envCleanupBatch); ok {
 		cfg.CleanupBatch = value
 	}
+	if envTrue(envTxDrain) {
+		cfg.TxDrain = true
+	}
+	if value, ok := envPositiveDuration(envTxDrainTimeout); ok {
+		cfg.TxDrainPublishTimeout = value
+	}
+	if cfg.TxDrain && cfg.TxDrainPublishTimeout <= 0 {
+		cfg.TxDrainPublishTimeout = defaultTxDrainPublishTimeout
+	}
 
 	return cfg
+}
+
+func envTrue(name string) bool {
+	value := strings.TrimSpace(os.Getenv(name))
+	return strings.EqualFold(
+		value,
+		"true",
+	) || value == "1"
+}
+
+func validateThroughput(cfg Config) error {
+	if cfg.TxDrain && cfg.TxDrainPublishTimeout >= maxTxDrainPublishTimeout {
+		return ErrTxDrainPublishTimeout
+	}
+
+	return nil
 }

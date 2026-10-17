@@ -6,6 +6,11 @@ import (
 )
 
 func (r *OutboxRelay) process(ctx context.Context) {
+	if r.txDrainActive(ctx) {
+		r.processTxDrain(ctx)
+		return
+	}
+
 	if !r.config.Batched {
 		r.processBatch(ctx)
 		return

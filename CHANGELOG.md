@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.9.2
+
+- batch: reads the type of `processed_messages.message_id` once per connection pool, not in every transaction; the unbounded map growth is gone; no flag (CT-1)
+
 ## v0.9.0
 
 - consumer, batch: `Opts.StrictUpdate` (off): a durable update the server rejects fails `New` with `consumer.ErrUpdateRejected` naming the stream, durable, code and err_code instead of a warning and the old config; transient errors are retried for 30s (`ErrBindTransient` after that); the bound filter set is checked (`ErrFilterMismatch`). `BROKERFX_CONSUMER_STRICT_UPDATE=false` turns it off. Without strict the per-message consumer logs the rejection like batch. (MQ-04)

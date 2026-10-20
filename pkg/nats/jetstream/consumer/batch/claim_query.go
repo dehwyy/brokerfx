@@ -1,17 +1,13 @@
 package batch
 
 import (
-	"database/sql"
 	"strings"
-	"sync"
 
 	"github.com/dehwyy/brokerfx/pkg/nats/jetstream/consumer"
 	"gorm.io/gorm"
 )
 
 const messageIDTypeQuery = `select data_type from information_schema.columns where table_schema = current_schema() and table_name = 'processed_messages' and column_name = 'message_id'`
-
-var messageIDTypes sync.Map
 
 func claimQuery(
 	conn *gorm.DB,
@@ -45,32 +41,6 @@ func claimQuery(
 		textArrayLiteral(keys),
 		textArrayLiteral(subjects),
 	}, nil
-}
-
-func messageIDType(conn *gorm.DB) (string, error) {
-	if cached, ok := messageIDTypes.Load(conn.Config); ok {
-		return cached.(string), nil
-	}
-
-	var dataType sql.NullString
-	if err := conn.Raw(messageIDTypeQuery).Scan(&dataType).Error; err != nil {
-		return "", err
-	}
-
-	elementType := ""
-	switch dataType.String {
-	case "uuid":
-		elementType = "uuid"
-	case "text", "character varying":
-		elementType = "text"
-	}
-
-	messageIDTypes.Store(
-		conn.Config,
-		elementType,
-	)
-
-	return elementType, nil
 }
 
 func claimValuesQuery(ordered []consumer.ProcessedMessage) (string, []any, error) {

@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.10.0
+
+- outbox: `BROKERFX_OUTBOX_RETRY_BACKOFF_BASE` / `BROKERFX_OUTBOX_RETRY_BACKOFF_MAX` (unset = off): exponential backoff between failed publishes for a config without its own (`RetryBackoffBase == 0`, `DefaultConfig`); a config backoff (`RecommendedConfig`) wins with a warning; BASE without MAX caps at 5s, MAX below BASE becomes BASE, MAX alone and invalid values are ignored with a warning. `Config.RetryJitter` / `BROKERFX_OUTBOX_RETRY_JITTER=true|1` (off): every backoff `d > 0` becomes uniform in `[d; 1.5d)`, above `RetryBackoffMax` too, and the tx-drain retry of an unknown outcome `floor + [0; floor/2)`; jitter only lengthens a pause, so the path to `PARKED` is never shorter. `MaxAttempts`, the attempt count, parking and transport errors are unchanged; with the env unset and `RetryJitter` false the behaviour is v0.9.2. (CT-16)
+
 ## v0.9.2
 
 - batch: reads the type of `processed_messages.message_id` once per connection pool, not in every transaction; the unbounded map growth is gone; no flag (CT-1)

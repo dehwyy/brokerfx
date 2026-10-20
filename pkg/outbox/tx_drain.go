@@ -208,19 +208,12 @@ func (r *OutboxRelay) drainSettle(
 		errMsg := outcome.err.Error()
 		row.LastError = &errMsg
 		row.State = StatePending
-		retryAt := now.Add(max(
-			r.config.TxDrainPublishTimeout,
-			txDrainUnknownRetryFloor,
-		))
+		retryAt := now.Add(r.unknownRetryDelay())
 		row.NextAttemptAt = &retryAt
 		row.UpdatedAt = now
 		if !unknownOutcome(outcome.err) {
 			row.Attempts++
-			at := now.Add(nextAttemptDelay(
-				row.Attempts,
-				r.config.RetryBackoffBase,
-				r.config.RetryBackoffMax,
-			))
+			at := now.Add(r.retryDelay(row.Attempts))
 			row.NextAttemptAt = &at
 			if r.config.MaxAttempts > 0 && row.Attempts >= r.config.MaxAttempts {
 				row.State = StateParked

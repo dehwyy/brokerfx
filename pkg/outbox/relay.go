@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math/rand/v2"
 	"net/textproto"
 	"os"
 	"strings"
@@ -83,6 +84,7 @@ type OutboxRelay struct {
 
 	capsCache      capsCache
 	detectSchemaFn detectFunc
+	jitter         func(int64) int64
 
 	paused atomic.Bool
 
@@ -131,6 +133,7 @@ func NewRelay(deps RelayDeps) *OutboxRelay {
 	}
 	cfg = resolveClaim(cfg)
 	cfg = resolveThroughput(cfg)
+	cfg = resolveRetry(cfg)
 
 	r := &OutboxRelay{
 		store:          deps.Store,
@@ -141,6 +144,7 @@ func NewRelay(deps RelayDeps) *OutboxRelay {
 		config:         cfg,
 		detectSchemaFn: detectSchema,
 		capsCache:      capsCache{recheckWait: defaultCapsRecheck},
+		jitter:         rand.Int64N,
 		done:           make(chan struct{}),
 	}
 	r.paused.Store(cfg.Paused || envPaused())
@@ -366,7 +370,7 @@ func (r *OutboxRelay) revertFailedV2(db *gorm.DB, events []relayEvent, failedOut
 		var nextAttemptAt *time.Time
 		if !isTransportError(outcome.err) {
 			attempts++
-			at := time.Now().Add(nextAttemptDelay(attempts, r.config.RetryBackoffBase, r.config.RetryBackoffMax))
+			at := time.Now().Add(r.retryDelay(attempts))
 			nextAttemptAt = &at
 		}
 

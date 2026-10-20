@@ -41,6 +41,7 @@ type Config struct {
 	MaxAttempts      int
 	RetryBackoffBase time.Duration
 	RetryBackoffMax  time.Duration
+	RetryJitter      bool
 	StatsInterval    time.Duration
 
 	CleanupInterval time.Duration

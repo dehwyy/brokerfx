@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.11.0
+
+- `replywait.NamedModule(name)`: an additional `replywait` instance in the same fx graph. Provides `*ReplyWaiter` as `name:"<name>"` and takes `jetstream.JetStream` and `Config` with the same name tag; `Waker` and `Observer` stay optional and untagged. `replywait.Module` is unchanged.
+
 ## v0.10.0
 
 - outbox: `BROKERFX_OUTBOX_RETRY_BACKOFF_BASE` / `BROKERFX_OUTBOX_RETRY_BACKOFF_MAX` (unset = off): exponential backoff between failed publishes for a config without its own (`RetryBackoffBase == 0`, `DefaultConfig`); a config backoff (`RecommendedConfig`) wins with a warning; BASE without MAX caps at 5s, MAX below BASE becomes BASE, MAX alone and invalid values are ignored with a warning. `Config.RetryJitter` / `BROKERFX_OUTBOX_RETRY_JITTER=true|1` (off): every backoff `d > 0` becomes uniform in `[d; 1.5d)`, above `RetryBackoffMax` too, and the tx-drain retry of an unknown outcome `floor + [0; floor/2)`; jitter only lengthens a pause, so the path to `PARKED` is never shorter. `MaxAttempts`, the attempt count, parking and transport errors are unchanged; with the env unset and `RetryJitter` false the behaviour is v0.9.2. (CT-16)

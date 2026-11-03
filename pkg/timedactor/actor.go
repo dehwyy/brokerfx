@@ -710,7 +710,11 @@ func (ta *TimedActor[T]) fireMatchingCallbacks(key string, metadata T, stored ma
 	copy(subs, ta.subscribers)
 	ta.mu.Unlock()
 
-	matched := make([]subscriber[T], 0, len(subs))
+	matched := make(
+		[]subscriber[T],
+		0,
+		len(subs),
+	)
 	for _, sub := range subs {
 		if sub.Match == nil || sub.Match(metadata) {
 			matched = append(

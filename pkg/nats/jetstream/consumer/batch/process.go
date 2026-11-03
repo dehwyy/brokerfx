@@ -22,9 +22,16 @@ func (c *Consumer) processBatch(
 		span,
 		msgs,
 	)
-	settleCtx := withItemSpans(
-		spanCtx,
+	wrapped := newItemMsgs(
+		msgs,
 		spans,
+	)
+	settleCtx := withItemMsgs(
+		withItemSpans(
+			spanCtx,
+			spans,
+		),
+		wrapped,
 	)
 	healthy := false
 	var tally SettleEvent
@@ -39,7 +46,7 @@ func (c *Consumer) processBatch(
 
 	results, completed := c.runHandler(
 		spanCtx,
-		msgs,
+		asHandlerMsgs(wrapped),
 	)
 	if !completed {
 		tally = c.isolate(

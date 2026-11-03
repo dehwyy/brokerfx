@@ -13,11 +13,19 @@ func (c *Consumer) isolate(
 ) SettleEvent {
 	var tally SettleEvent
 	spans := itemSpansFrom(ctx)
+	wrapped := itemMsgsFrom(ctx)
 	for i, msg := range msgs {
+		handlerMsg := msg
+		selfKind := settledAck
+		if i < len(wrapped) {
+			handlerMsg = wrapped[i]
+			selfKind = wrapped[i].verdict()
+		}
+
 		if isSettled(msg) {
 			spans.end(
 				i,
-				settledAck,
+				selfKind,
 			)
 			continue
 		}
@@ -25,7 +33,7 @@ func (c *Consumer) isolate(
 		single := []jetstream.Msg{msg}
 		results, completed := c.runHandler(
 			ctx,
-			single,
+			[]jetstream.Msg{handlerMsg},
 		)
 		if !completed {
 			kind, _ := c.apply(

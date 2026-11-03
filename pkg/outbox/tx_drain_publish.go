@@ -115,6 +115,11 @@ func (r *OutboxRelay) drainPublish(
 		0,
 		len(events),
 	)
+	ends := make(
+		[]func(error),
+		0,
+		len(events),
+	)
 	for i, event := range events {
 		outcomes[i] = pubResult{
 			id: event.ID,
@@ -123,11 +128,15 @@ func (r *OutboxRelay) drainPublish(
 			continue
 		}
 
-		producerEvent, err := r.producerEvent(event)
+		producerEvent, end, err := r.tracedProducerEvent(event)
 		if err != nil {
 			outcomes[i].err = err
 			continue
 		}
+		ends = append(
+			ends,
+			end,
+		)
 		pending = append(
 			pending,
 			i,
@@ -154,6 +163,7 @@ func (r *OutboxRelay) drainPublish(
 	)
 	for position, index := range pending {
 		outcomes[index].err = errs[position]
+		ends[position](outcomes[index].err)
 	}
 
 	return outcomes

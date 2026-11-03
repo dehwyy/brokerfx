@@ -111,6 +111,11 @@ func (r *OutboxRelay) publishBatched(
 		0,
 		len(events),
 	)
+	ends := make(
+		[]func(error),
+		0,
+		len(events),
+	)
 	for i, event := range events {
 		outcomes[i] = pubResult{
 			id: event.ID,
@@ -119,11 +124,15 @@ func (r *OutboxRelay) publishBatched(
 			continue
 		}
 
-		producerEvent, err := r.producerEvent(event)
+		producerEvent, end, err := r.tracedProducerEvent(event)
 		if err != nil {
 			outcomes[i].err = err
 			continue
 		}
+		ends = append(
+			ends,
+			end,
+		)
 		pending = append(
 			pending,
 			i,
@@ -151,6 +160,7 @@ func (r *OutboxRelay) publishBatched(
 		if position < len(errs) {
 			outcomes[index].err = errs[position]
 		}
+		ends[position](outcomes[index].err)
 	}
 
 	return outcomes

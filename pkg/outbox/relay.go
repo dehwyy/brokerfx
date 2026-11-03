@@ -29,11 +29,12 @@ func envPaused() bool {
 }
 
 type relayEvent struct {
-	ID       string
-	Topic    string
-	Payload  []byte
-	Headers  map[string]string
-	Attempts int
+	ID        string
+	Topic     string
+	Payload   []byte
+	Headers   map[string]string
+	Attempts  int
+	CreatedAt time.Time
 }
 
 type pubResult struct {
@@ -314,9 +315,10 @@ func (r *OutboxRelay) lockRowsLegacy(query *gorm.DB) ([]relayEvent, error) {
 	events := make([]relayEvent, len(rows))
 	for i, row := range rows {
 		events[i] = relayEvent{
-			ID:      row.ID,
-			Topic:   row.Topic,
-			Payload: row.Payload,
+			ID:        row.ID,
+			Topic:     row.Topic,
+			Payload:   row.Payload,
+			CreatedAt: row.CreatedAt,
 		}
 	}
 
@@ -336,10 +338,11 @@ func (r *OutboxRelay) decodeRows(rows []outboxEventRow) []relayEvent {
 	events := make([]relayEvent, len(rows))
 	for i, row := range rows {
 		event := relayEvent{
-			ID:       row.ID,
-			Topic:    row.Topic,
-			Payload:  row.Payload,
-			Attempts: row.Attempts,
+			ID:        row.ID,
+			Topic:     row.Topic,
+			Payload:   row.Payload,
+			Attempts:  row.Attempts,
+			CreatedAt: row.CreatedAt,
 		}
 
 		if len(row.Headers) > 0 {
@@ -478,7 +481,7 @@ func (r *OutboxRelay) processBatch(ctx context.Context) {
 		}
 
 		go func() {
-			producerEvent, err := r.producerEvent(event)
+			producerEvent, end, err := r.tracedProducerEvent(event)
 			if err != nil {
 				results <- pubResult{
 					id:  event.ID,
@@ -488,6 +491,7 @@ func (r *OutboxRelay) processBatch(ctx context.Context) {
 			}
 
 			pubErr := r.producer.Produce(ctx, producerEvent)
+			end(pubErr)
 			results <- pubResult{
 				id:  event.ID,
 				err: pubErr,

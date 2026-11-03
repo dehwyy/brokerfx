@@ -12,25 +12,31 @@ func withTraceHeaders(ctx context.Context, headers map[string]string, v2 bool) m
 		return headers
 	}
 
-	trace := make(map[string]string, 3)
+	injected := make(
+		map[string]string,
+		len(traceHeaderKeys),
+	)
 	tracenats.InjectMap(
 		ctx,
-		trace,
+		injected,
 	)
-	if len(trace) == 0 {
+	if len(injected) == 0 {
 		return headers
 	}
 
 	merged := make(
 		map[string]string,
-		len(headers)+len(trace),
+		len(headers)+len(injected),
 	)
 	for key, value := range headers {
 		merged[key] = value
 	}
 
-	for key, value := range trace {
-		if hasHeaderFold(headers, key) {
+	for key, value := range injected {
+		if hasHeaderFold(
+			headers,
+			key,
+		) {
 			continue
 		}
 		merged[key] = value
@@ -41,7 +47,10 @@ func withTraceHeaders(ctx context.Context, headers map[string]string, v2 bool) m
 
 func hasHeaderFold(headers map[string]string, key string) bool {
 	for existing := range headers {
-		if strings.EqualFold(existing, key) {
+		if strings.EqualFold(
+			existing,
+			key,
+		) {
 			return true
 		}
 	}

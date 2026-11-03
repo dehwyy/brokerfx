@@ -112,3 +112,40 @@ func TestBuildMessageRowsElementHeaderErrors(t *testing.T) {
 		)
 	}
 }
+
+func TestBuildMessageRowsOwnTraceHeaderWinsOverInjectedCase(t *testing.T) {
+	rows, err := buildMessageRows(
+		[]Message{
+			{
+				Subject: "a",
+				Headers: map[string]string{
+					"Traceparent": "own",
+				},
+			},
+		},
+		map[string]string{
+			"traceparent": "injected",
+			"baggage":     "pl.tx_id=tx-1",
+		},
+		true,
+		time.Now(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var decoded map[string]string
+	if err := json.Unmarshal(rows[0].Headers, &decoded); err != nil {
+		t.Fatal(err)
+	}
+
+	if decoded["Traceparent"] != "own" {
+		t.Fatalf("own header must win: %v", decoded)
+	}
+	if _, ok := decoded["traceparent"]; ok {
+		t.Fatalf("only one spelling of traceparent may be stored: %v", decoded)
+	}
+	if decoded["baggage"] != "pl.tx_id=tx-1" {
+		t.Fatalf("other injected keys survive: %v", decoded)
+	}
+}

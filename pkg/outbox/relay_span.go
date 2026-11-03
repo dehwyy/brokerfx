@@ -17,7 +17,10 @@ var traceHeaderKeys = []string{
 }
 
 func startRelaySpan(event relayEvent) (map[string]string, func(error)) {
-	if !hasHeaderFold(event.Headers, "traceparent") {
+	if !hasHeaderFold(
+		event.Headers,
+		"traceparent",
+	) {
 		return event.Headers, noopEnd
 	}
 
@@ -97,7 +100,10 @@ func lowerTraceHeaders(headers map[string]string) map[string]string {
 
 func isTraceHeader(key string) bool {
 	for _, traceKey := range traceHeaderKeys {
-		if strings.EqualFold(key, traceKey) {
+		if strings.EqualFold(
+			key,
+			traceKey,
+		) {
 			return true
 		}
 	}

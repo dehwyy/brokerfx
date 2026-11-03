@@ -100,10 +100,16 @@ func TestRelaySpanContinuesStoredTrace(t *testing.T) {
 	if span.SpanKind() != trace.SpanKindProducer {
 		t.Fatalf("kind: %v", span.SpanKind())
 	}
-	if value, ok := attributeValue(span, "pl.tx_id"); !ok || value.AsString() != "tx-relay" {
+	if value, ok := attributeValue(
+		span,
+		"pl.tx_id",
+	); !ok || value.AsString() != "tx-relay" {
 		t.Fatalf("pl.tx_id attribute missing: %v", span.Attributes())
 	}
-	if value, ok := attributeValue(span, "messaging.message.id"); !ok || value.AsString() != "event-1" {
+	if value, ok := attributeValue(
+		span,
+		"messaging.message.id",
+	); !ok || value.AsString() != "event-1" {
 		t.Fatalf("messaging.message.id: %v", span.Attributes())
 	}
 }

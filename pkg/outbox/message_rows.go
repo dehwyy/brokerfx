@@ -77,6 +77,12 @@ func mergeHeaders(shared, own map[string]string) map[string]string {
 		len(shared)+len(own),
 	)
 	for key, value := range shared {
+		if isTraceHeader(key) && hasHeaderFold(
+			own,
+			key,
+		) {
+			continue
+		}
 		merged[key] = value
 	}
 	for key, value := range own {

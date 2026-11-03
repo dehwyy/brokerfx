@@ -3,12 +3,13 @@ package consumer
 import (
 	"context"
 	"errors"
-	"fmt"
 
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/rs/zerolog/log"
 	"go.opentelemetry.io/otel/trace"
 )
+
+var errHandlerPanic = errors.New("panic")
 
 func settled(err error) bool {
 	return errors.Is(err, jetstream.ErrMsgAlreadyAckd)
@@ -31,7 +32,7 @@ func process(msg jetstream.Msg, opts Opts) {
 			}
 			endConsumeSpan(
 				span,
-				fmt.Errorf("consumer handler panic: %v", r),
+				errHandlerPanic,
 			)
 		}
 	}()

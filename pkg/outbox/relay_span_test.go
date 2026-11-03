@@ -92,25 +92,41 @@ func TestRelaySpanContinuesStoredTrace(t *testing.T) {
 
 	span := fixture.relaySpan(t)
 	if span.Parent().SpanID() != fixture.parent.SpanID() || span.SpanContext().TraceID() != fixture.parent.TraceID() {
-		t.Fatalf("relay span must continue stored trace: parent=%v", span.Parent())
+		t.Fatalf(
+			"relay span must continue stored trace: parent=%v",
+			span.Parent(),
+		)
 	}
 	if !span.StartTime().Equal(createdAt) {
-		t.Fatalf("start must equal created_at: %v vs %v", span.StartTime(), createdAt)
+		t.Fatalf(
+			"start must equal created_at: %v vs %v",
+			span.StartTime(),
+			createdAt,
+		)
 	}
 	if span.SpanKind() != trace.SpanKindProducer {
-		t.Fatalf("kind: %v", span.SpanKind())
+		t.Fatalf(
+			"kind: %v",
+			span.SpanKind(),
+		)
 	}
 	if value, ok := attributeValue(
 		span,
 		"pl.tx_id",
 	); !ok || value.AsString() != "tx-relay" {
-		t.Fatalf("pl.tx_id attribute missing: %v", span.Attributes())
+		t.Fatalf(
+			"pl.tx_id attribute missing: %v",
+			span.Attributes(),
+		)
 	}
 	if value, ok := attributeValue(
 		span,
 		"messaging.message.id",
 	); !ok || value.AsString() != "event-1" {
-		t.Fatalf("messaging.message.id: %v", span.Attributes())
+		t.Fatalf(
+			"messaging.message.id: %v",
+			span.Attributes(),
+		)
 	}
 }
 
@@ -127,13 +143,20 @@ func TestRelaySpanReplacesTraceparent(t *testing.T) {
 	span := fixture.relaySpan(t)
 	want := "00-" + span.SpanContext().TraceID().String() + "-" + span.SpanContext().SpanID().String() + "-01"
 	if headers["traceparent"] != want {
-		t.Fatalf("traceparent must point to relay span: %s want %s", headers["traceparent"], want)
+		t.Fatalf(
+			"traceparent must point to relay span: %s want %s",
+			headers["traceparent"],
+			want,
+		)
 	}
 	if headers["traceparent"] == fixture.headers["traceparent"] {
 		t.Fatal("traceparent not replaced")
 	}
 	if headers["X-Own"] != "1" || headers["baggage"] == "" {
-		t.Fatalf("other headers must survive: %v", headers)
+		t.Fatalf(
+			"other headers must survive: %v",
+			headers,
+		)
 	}
 }
 
@@ -149,7 +172,10 @@ func TestRelaySpanWithoutContextRecordsNothing(t *testing.T) {
 	end(errors.New("ignored"))
 
 	if len(headers) != 1 || headers["X-Own"] != "1" {
-		t.Fatalf("headers must pass through: %v", headers)
+		t.Fatalf(
+			"headers must pass through: %v",
+			headers,
+		)
 	}
 	for _, span := range fixture.recorder.Ended() {
 		if span.Name() == "outbox.relay" {
@@ -170,10 +196,16 @@ func TestRelaySpanEndWithError(t *testing.T) {
 
 	span := fixture.relaySpan(t)
 	if span.Status().Code != codes.Error {
-		t.Fatalf("status: %v", span.Status())
+		t.Fatalf(
+			"status: %v",
+			span.Status(),
+		)
 	}
 	if len(span.Events()) != 1 || span.Events()[0].Name != "exception" {
-		t.Fatalf("error must be recorded: %v", span.Events())
+		t.Fatalf(
+			"error must be recorded: %v",
+			span.Events(),
+		)
 	}
 }
 
@@ -188,9 +220,15 @@ func TestRelaySpanCarriesAttempts(t *testing.T) {
 	})
 	end(nil)
 
-	value, ok := attributeValue(fixture.relaySpan(t), "outbox.attempts")
+	value, ok := attributeValue(
+		fixture.relaySpan(t),
+		"outbox.attempts",
+	)
 	if !ok || value.AsInt64() != 2 {
-		t.Fatalf("outbox.attempts: %v", value)
+		t.Fatalf(
+			"outbox.attempts: %v",
+			value,
+		)
 	}
 }
 

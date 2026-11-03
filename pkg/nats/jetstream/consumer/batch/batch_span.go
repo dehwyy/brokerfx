@@ -84,7 +84,7 @@ func endBatchSpan(span trace.Span, completed bool) {
 	if !completed {
 		span.SetStatus(
 			codes.Error,
-			"batch handler panic",
+			"panic",
 		)
 	}
 	span.End()

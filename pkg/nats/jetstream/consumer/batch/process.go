@@ -18,6 +18,13 @@ func (c *Consumer) processBatch(
 		ctx,
 		msgs,
 	)
+	healthy := false
+	defer func() {
+		endBatchSpan(
+			span,
+			healthy,
+		)
+	}()
 
 	results, completed := c.runHandler(
 		spanCtx,
@@ -28,10 +35,6 @@ func (c *Consumer) processBatch(
 			spanCtx,
 			msgs,
 		)
-		endBatchSpan(
-			span,
-			false,
-		)
 		return
 	}
 
@@ -40,10 +43,7 @@ func (c *Consumer) processBatch(
 		msgs,
 		results,
 	)
-	endBatchSpan(
-		span,
-		true,
-	)
+	healthy = true
 }
 
 func (c *Consumer) runHandler(

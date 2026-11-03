@@ -46,19 +46,31 @@ func TestBuildMessageRowsElementHeaders(t *testing.T) {
 		len(rows),
 	)
 	for i, row := range rows {
-		if err := json.Unmarshal(row.Headers, &decoded[i]); err != nil {
+		if err := json.Unmarshal(
+			row.Headers,
+			&decoded[i],
+		); err != nil {
 			t.Fatal(err)
 		}
 	}
 
 	if decoded[0]["Paylonium-Signature"] != "sig-a" || decoded[0]["X-Shared"] != "element" {
-		t.Fatalf("element headers must win over shared: %v", decoded[0])
+		t.Fatalf(
+			"element headers must win over shared: %v",
+			decoded[0],
+		)
 	}
 	if len(decoded[1]) != 1 || decoded[1]["X-Shared"] != "shared" {
-		t.Fatalf("element without headers keeps shared: %v", decoded[1])
+		t.Fatalf(
+			"element without headers keeps shared: %v",
+			decoded[1],
+		)
 	}
 	if decoded[2][kvOperationHeader] != kvOperationDelete || decoded[2]["X-Element"] != "kv" {
-		t.Fatalf("kv operation must survive element headers: %v", decoded[2])
+		t.Fatalf(
+			"kv operation must survive element headers: %v",
+			decoded[2],
+		)
 	}
 }
 
@@ -105,8 +117,15 @@ func TestBuildMessageRowsElementHeaderErrors(t *testing.T) {
 					tc.v2,
 					time.Now(),
 				)
-				if !errors.Is(err, tc.want) {
-					t.Fatalf("err %v, want %v", err, tc.want)
+				if !errors.Is(
+					err,
+					tc.want,
+				) {
+					t.Fatalf(
+						"err %v, want %v",
+						err,
+						tc.want,
+					)
 				}
 			},
 		)
@@ -135,17 +154,29 @@ func TestBuildMessageRowsOwnTraceHeaderWinsOverInjectedCase(t *testing.T) {
 	}
 
 	var decoded map[string]string
-	if err := json.Unmarshal(rows[0].Headers, &decoded); err != nil {
+	if err := json.Unmarshal(
+		rows[0].Headers,
+		&decoded,
+	); err != nil {
 		t.Fatal(err)
 	}
 
 	if decoded["Traceparent"] != "own" {
-		t.Fatalf("own header must win: %v", decoded)
+		t.Fatalf(
+			"own header must win: %v",
+			decoded,
+		)
 	}
 	if _, ok := decoded["traceparent"]; ok {
-		t.Fatalf("only one spelling of traceparent may be stored: %v", decoded)
+		t.Fatalf(
+			"only one spelling of traceparent may be stored: %v",
+			decoded,
+		)
 	}
 	if decoded["baggage"] != "pl.tx_id=tx-1" {
-		t.Fatalf("other injected keys survive: %v", decoded)
+		t.Fatalf(
+			"other injected keys survive: %v",
+			decoded,
+		)
 	}
 }

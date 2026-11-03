@@ -75,7 +75,10 @@ func consumeSpans(recorder *tracetest.SpanRecorder) []sdktrace.ReadOnlySpan {
 	var out []sdktrace.ReadOnlySpan
 	for _, span := range recorder.Ended() {
 		if span.Name() == "nats.consume" {
-			out = append(out, span)
+			out = append(
+				out,
+				span,
+			)
 		}
 	}
 
@@ -87,7 +90,10 @@ func oneConsumeSpan(t *testing.T, recorder *tracetest.SpanRecorder) sdktrace.Rea
 
 	spans := consumeSpans(recorder)
 	if len(spans) != 1 {
-		t.Fatalf("want 1 nats.consume span, got %d", len(spans))
+		t.Fatalf(
+			"want 1 nats.consume span, got %d",
+			len(spans),
+		)
 	}
 
 	return spans[0]
@@ -105,7 +111,10 @@ func spanAttribute(span sdktrace.ReadOnlySpan, key string) (attribute.Value, boo
 
 func TestProcessContinuesTraceFromHeaders(t *testing.T) {
 	recorder := recordSpans(t)
-	msg := newTraceMsg(tracedHeaders(), 1)
+	msg := newTraceMsg(
+		tracedHeaders(),
+		1,
+	)
 
 	var handlerSpan trace.SpanContext
 	var txID string
@@ -115,57 +124,123 @@ func TestProcessContinuesTraceFromHeaders(t *testing.T) {
 		return nil
 	}))
 
-	span := oneConsumeSpan(t, recorder)
+	span := oneConsumeSpan(
+		t,
+		recorder,
+	)
 	if span.Parent().TraceID().String() != testTraceID {
-		t.Fatalf("parent trace: want %s got %s", testTraceID, span.Parent().TraceID())
+		t.Fatalf(
+			"parent trace: want %s got %s",
+			testTraceID,
+			span.Parent().TraceID(),
+		)
 	}
 	if span.Parent().SpanID().String() != testParentID {
-		t.Fatalf("parent span: want %s got %s", testParentID, span.Parent().SpanID())
+		t.Fatalf(
+			"parent span: want %s got %s",
+			testParentID,
+			span.Parent().SpanID(),
+		)
 	}
 	if handlerSpan.SpanID() != span.SpanContext().SpanID() {
 		t.Fatalf("handler ctx must carry nats.consume span")
 	}
 	if txID != "tx-77" {
-		t.Fatalf("baggage pl.tx_id: want tx-77 got %q", txID)
+		t.Fatalf(
+			"baggage pl.tx_id: want tx-77 got %q",
+			txID,
+		)
 	}
 	if span.SpanKind() != trace.SpanKindConsumer {
-		t.Fatalf("kind: %v", span.SpanKind())
+		t.Fatalf(
+			"kind: %v",
+			span.SpanKind(),
+		)
 	}
-	if value, ok := spanAttribute(span, "messaging.message.id"); !ok || value.AsString() != "msg-1" {
-		t.Fatalf("messaging.message.id: %v %v", value, ok)
+	if value, ok := spanAttribute(
+		span,
+		"messaging.message.id",
+	); !ok || value.AsString() != "msg-1" {
+		t.Fatalf(
+			"messaging.message.id: %v %v",
+			value,
+			ok,
+		)
 	}
-	if value, ok := spanAttribute(span, "messaging.nats.stream"); !ok || value.AsString() != "ORDERS" {
-		t.Fatalf("messaging.nats.stream: %v %v", value, ok)
+	if value, ok := spanAttribute(
+		span,
+		"messaging.nats.stream",
+	); !ok || value.AsString() != "ORDERS" {
+		t.Fatalf(
+			"messaging.nats.stream: %v %v",
+			value,
+			ok,
+		)
 	}
-	if value, ok := spanAttribute(span, "messaging.consumer.group.name"); !ok || value.AsString() != "orders-worker" {
-		t.Fatalf("messaging.consumer.group.name: %v %v", value, ok)
+	if value, ok := spanAttribute(
+		span,
+		"messaging.consumer.group.name",
+	); !ok || value.AsString() != "orders-worker" {
+		t.Fatalf(
+			"messaging.consumer.group.name: %v %v",
+			value,
+			ok,
+		)
 	}
-	if value, ok := spanAttribute(span, "messaging.nats.sequence.stream"); !ok || value.AsInt64() != 42 {
-		t.Fatalf("messaging.nats.sequence.stream: %v %v", value, ok)
+	if value, ok := spanAttribute(
+		span,
+		"messaging.nats.sequence.stream",
+	); !ok || value.AsInt64() != 42 {
+		t.Fatalf(
+			"messaging.nats.sequence.stream: %v %v",
+			value,
+			ok,
+		)
 	}
 	if msg.count("ack") != 1 {
-		t.Fatalf("ack: %d", msg.count("ack"))
+		t.Fatalf(
+			"ack: %d",
+			msg.count("ack"),
+		)
 	}
 }
 
 func TestProcessRootWithoutHeaders(t *testing.T) {
 	recorder := recordSpans(t)
-	process(newTraceMsg(nats.Header{}, 1), handlerOf2(func(context.Context) error { return nil }))
+	process(newTraceMsg(
+		nats.Header{},
+		1,
+	), handlerOf2(func(context.Context) error { return nil }))
 
-	span := oneConsumeSpan(t, recorder)
+	span := oneConsumeSpan(
+		t,
+		recorder,
+	)
 	if span.Parent().IsValid() {
-		t.Fatalf("want root span, parent %v", span.Parent())
+		t.Fatalf(
+			"want root span, parent %v",
+			span.Parent(),
+		)
 	}
 }
 
 func TestProcessRootOnMalformedTraceparent(t *testing.T) {
 	recorder := recordSpans(t)
 	headers := nats.Header{"traceparent": []string{"garbage"}}
-	process(newTraceMsg(headers, 1), handlerOf2(func(context.Context) error { return nil }))
+	process(newTraceMsg(
+		headers,
+		1,
+	), handlerOf2(func(context.Context) error { return nil }))
 
-	span := oneConsumeSpan(t, recorder)
+	span := oneConsumeSpan(
+		t,
+		recorder,
+	)
 	if span.Parent().IsValid() {
-		t.Fatalf("want root span, parent %v", span.Parent())
+		t.Fatalf(
+			"want root span, parent %v",
+			span.Parent(),
+		)
 	}
 }
 
@@ -187,11 +262,24 @@ func TestProcessKeepsSpanFromMiddleware(t *testing.T) {
 			return ctx, nil
 		},
 	)
-	process(newTraceMsg(tracedHeaders(), 1), opts)
+	process(
+		newTraceMsg(
+			tracedHeaders(),
+			1,
+		),
+		opts,
+	)
 
-	span := oneConsumeSpan(t, recorder)
+	span := oneConsumeSpan(
+		t,
+		recorder,
+	)
 	if span.Parent().SpanID() != mwSpan.SpanID() {
-		t.Fatalf("parent: want middleware span %s got %s", mwSpan.SpanID(), span.Parent().SpanID())
+		t.Fatalf(
+			"parent: want middleware span %s got %s",
+			mwSpan.SpanID(),
+			span.Parent().SpanID(),
+		)
 	}
 	if span.SpanContext().TraceID() != mwSpan.TraceID() {
 		t.Fatalf("trace id must follow middleware span")
@@ -200,50 +288,99 @@ func TestProcessKeepsSpanFromMiddleware(t *testing.T) {
 
 func TestProcessHandlerErrorOnSpan(t *testing.T) {
 	recorder := recordSpans(t)
-	msg := newTraceMsg(tracedHeaders(), 3)
+	msg := newTraceMsg(
+		tracedHeaders(),
+		3,
+	)
 	process(msg, handlerOf2(func(context.Context) error { return errors.New("boom") }))
 
-	span := oneConsumeSpan(t, recorder)
+	span := oneConsumeSpan(
+		t,
+		recorder,
+	)
 	if span.Status().Code != codes.Error {
-		t.Fatalf("status: %v", span.Status())
+		t.Fatalf(
+			"status: %v",
+			span.Status(),
+		)
 	}
-	if value, ok := spanAttribute(span, "messaging.nats.num_delivered"); !ok || value.AsInt64() != 3 {
-		t.Fatalf("messaging.nats.num_delivered: %v %v", value, ok)
+	if value, ok := spanAttribute(
+		span,
+		"messaging.nats.num_delivered",
+	); !ok || value.AsInt64() != 3 {
+		t.Fatalf(
+			"messaging.nats.num_delivered: %v %v",
+			value,
+			ok,
+		)
 	}
 	if msg.count("nak") != 1 {
-		t.Fatalf("nak: %d", msg.count("nak"))
+		t.Fatalf(
+			"nak: %d",
+			msg.count("nak"),
+		)
 	}
 }
 
 func TestProcessPanicMarksSpan(t *testing.T) {
 	recorder := recordSpans(t)
-	msg := newTraceMsg(tracedHeaders(), 1)
+	msg := newTraceMsg(
+		tracedHeaders(),
+		1,
+	)
 	process(msg, handlerOf2(func(context.Context) error { panic("kaboom") }))
 
-	span := oneConsumeSpan(t, recorder)
+	span := oneConsumeSpan(
+		t,
+		recorder,
+	)
 	if span.Status().Code != codes.Error {
-		t.Fatalf("status: %v", span.Status())
+		t.Fatalf(
+			"status: %v",
+			span.Status(),
+		)
 	}
 	if msg.count("nak") != 1 {
-		t.Fatalf("nak: %d", msg.count("nak"))
+		t.Fatalf(
+			"nak: %d",
+			msg.count("nak"),
+		)
 	}
 }
 
 func TestProcessSecondMessageDoesNotInheritFirstSpan(t *testing.T) {
 	recorder := recordSpans(t)
-	first := newTraceMsg(nats.Header{}, 1)
-	second := newTraceMsg(nats.Header{}, 1)
+	first := newTraceMsg(
+		nats.Header{},
+		1,
+	)
+	second := newTraceMsg(
+		nats.Header{},
+		1,
+	)
 	opts := handlerOf2(func(context.Context) error { return nil })
 
-	process(first, opts)
-	process(second, opts)
+	process(
+		first,
+		opts,
+	)
+	process(
+		second,
+		opts,
+	)
 
 	spans := consumeSpans(recorder)
 	if len(spans) != 2 {
-		t.Fatalf("want 2 spans, got %d", len(spans))
+		t.Fatalf(
+			"want 2 spans, got %d",
+			len(spans),
+		)
 	}
 	if spans[1].Parent().IsValid() {
-		t.Fatalf("second message must be a root, parent %v", spans[1].Parent())
+		t.Fatalf(
+			"second message must be a root, parent %v",
+			spans[1].Parent(),
+		)
 	}
 	if spans[0].SpanContext().TraceID() == spans[1].SpanContext().TraceID() {
 		t.Fatalf("messages must not share a trace")

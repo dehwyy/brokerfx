@@ -30,7 +30,11 @@ func (s *OutboxStore) SaveMessages(ctx context.Context, messages []Message, opts
 
 	rows, err := buildMessageRows(
 		messages,
-		options.headers,
+		withTraceHeaders(
+			ctx,
+			options.headers,
+			caps.V2,
+		),
 		caps.V2,
 		time.Now(),
 	)

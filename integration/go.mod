@@ -4,6 +4,7 @@ go 1.25.5
 
 require (
 	github.com/dehwyy/brokerfx v0.0.0-00010101000000-000000000000
+	github.com/dehwyy/tracerfx v0.7.0
 	github.com/dehwyy/txmanagerfx v0.0.3
 	github.com/google/uuid v1.6.0
 	github.com/nats-io/nats-server/v2 v2.14.0
@@ -13,6 +14,7 @@ require (
 	github.com/stretchr/testify v1.11.1
 	github.com/testcontainers/testcontainers-go/modules/nats v0.44.0
 	github.com/testcontainers/testcontainers-go/modules/postgres v0.44.0
+	go.opentelemetry.io/otel/sdk v1.44.0
 	go.uber.org/fx v1.24.0
 	gorm.io/driver/postgres v1.6.0
 	gorm.io/gorm v1.31.1

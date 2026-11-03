@@ -103,6 +103,12 @@ func (s *OutboxStore) SaveMessage(ctx context.Context, msg Message, opts ...Mess
 		return ErrSchemaOutdated
 	}
 
+	options.headers = withTraceHeaders(
+		ctx,
+		options.headers,
+		caps.V2,
+	)
+
 	eventID, err := newEventID()
 	if err != nil {
 		return err

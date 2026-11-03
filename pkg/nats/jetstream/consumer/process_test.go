@@ -74,6 +74,9 @@ func (m *settleMsg) Nak() error                       { return m.settle("nak", m
 func (m *settleMsg) NakWithDelay(time.Duration) error { return m.settle("nakdelay", nil) }
 func (m *settleMsg) Term() error                      { return m.settle("term", nil) }
 func (m *settleMsg) Headers() nats.Header             { return nats.Header{} }
+func (m *settleMsg) Metadata() (*jetstream.MsgMetadata, error) {
+	return nil, errors.New("no metadata")
+}
 func (m *settleMsg) InProgress() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

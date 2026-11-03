@@ -3,9 +3,11 @@ package consumer
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/rs/zerolog/log"
+	"go.opentelemetry.io/otel/trace"
 )
 
 func settled(err error) bool {
@@ -14,6 +16,7 @@ func settled(err error) bool {
 
 func process(msg jetstream.Msg, opts Opts) {
 	log.Debug().Any("subject", msg.Subject()).Msg("nats message received")
+	span := trace.SpanFromContext(context.Background())
 	defer func() {
 		if r := recover(); r != nil {
 			log.Error().
@@ -26,6 +29,10 @@ func process(msg jetstream.Msg, opts Opts) {
 			); nakErr != nil && !settled(nakErr) {
 				log.Error().Err(nakErr).Msg("failed to NAK after panic")
 			}
+			endConsumeSpan(
+				span,
+				fmt.Errorf("consumer handler panic: %v", r),
+			)
 		}
 	}()
 
@@ -44,6 +51,11 @@ func process(msg jetstream.Msg, opts Opts) {
 			return
 		}
 	}
+
+	ctx, span = startConsumeSpan(
+		ctx,
+		msg,
+	)
 
 	if err = runWithHeartbeatEvery(
 		ctx,
@@ -64,6 +76,10 @@ func process(msg jetstream.Msg, opts Opts) {
 			log.Error().Err(err).Str("subject", msg.Subject()).Msg("handler failed — NAK for redelivery")
 			log.Error().Err(nakErr).Msg("failed to NAK after handler error")
 		}
+		endConsumeSpan(
+			span,
+			err,
+		)
 		return
 	}
 
@@ -74,6 +90,11 @@ func process(msg jetstream.Msg, opts Opts) {
 			log.Error().Err(ackErr).Str("subject", msg.Subject()).Msg("failed to ACK after successful handler")
 		}
 	}
+
+	endConsumeSpan(
+		span,
+		nil,
+	)
 
 	for _, mw := range opts.AfterHandlerMiddleware {
 		ctx, err = mw(ctx, msg)

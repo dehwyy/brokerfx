@@ -88,7 +88,7 @@ func TestRelayPublishesTraceContext(t *testing.T) {
 			var relaySpanID string
 			require.Eventually(t, func() bool {
 				for _, span := range recorder.Ended() {
-					if span.Name() == "outbox.relay" {
+					if span.Name() == "outbox.relay" && hasDestination(span, tc.subject) {
 						relaySpanID = span.SpanContext().SpanID().String()
 						return true
 					}
@@ -102,4 +102,14 @@ func TestRelayPublishesTraceContext(t *testing.T) {
 			require.Contains(t, raw.Header.Get("baggage"), "pl.tx_id=tx-save")
 		})
 	}
+}
+
+func hasDestination(span sdktrace.ReadOnlySpan, subject string) bool {
+	for _, kv := range span.Attributes() {
+		if string(kv.Key) == "messaging.destination.name" && kv.Value.AsString() == subject {
+			return true
+		}
+	}
+
+	return false
 }

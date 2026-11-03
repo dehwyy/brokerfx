@@ -3,6 +3,7 @@ package producer
 import (
 	"context"
 
+	tracenats "github.com/dehwyy/tracerfx/pkg/tracer/delivery/nats"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/rs/zerolog/log"
@@ -52,7 +53,19 @@ func (p *Producer) Produce(
 	ctx context.Context,
 	event Event,
 	opts ...PublishOption,
-) error {
+) (err error) {
+	ctx, span := tracenats.StartProducer(
+		ctx,
+		"nats.publish",
+		event.Subject(),
+	)
+	defer func() {
+		endPublishSpan(
+			span,
+			err,
+		)
+	}()
+
 	msg, err := p.message(
 		ctx,
 		event,

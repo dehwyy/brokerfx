@@ -10,6 +10,7 @@ import (
 	"time"
 
 	streamoptsbuilder "github.com/dehwyy/brokerfx/pkg/nats/jetstream/stream/stream-opts-builder"
+	tracenats "github.com/dehwyy/tracerfx/pkg/tracer/delivery/nats"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
@@ -58,6 +59,8 @@ type TimedActor[T any] struct {
 
 	// ctx is the root context for all background goroutines.
 	ctx context.Context
+
+	traces sync.Map
 }
 
 // subscriber represents a single callback registration bound to a metadata
@@ -75,6 +78,8 @@ type subscriber[T any] struct {
 type payload[T any] struct {
 	ExpiresAt int64 `json:"e"` // Unix nanoseconds
 	Metadata  T     `json:"m"`
+
+	Trace map[string]string `json:"trace,omitempty"`
 }
 
 // New creates a new TimedActor instance. It ensures the KV bucket exists,
@@ -134,13 +139,13 @@ func New[T any](deps Deps) (*TimedActor[T], error) {
 	rootCtx, cancel := context.WithCancel(context.Background())
 
 	return &TimedActor[T]{
-		kv:     kv,
-		logger: log.With().Str("component", "timed-actor").Logger(),
-		config: cfg,
+		kv:             kv,
+		logger:         log.With().Str("component", "timed-actor").Logger(),
+		config:         cfg,
 		timers:         make(map[string]*time.Timer),
 		activeWatchers: make(map[string]struct{}),
 		cancel:         cancel,
-		ctx:    rootCtx,
+		ctx:            rootCtx,
 	}, nil
 }
 
@@ -151,10 +156,22 @@ func New[T any](deps Deps) (*TimedActor[T], error) {
 // timer automatically.
 func (ta *TimedActor[T]) Add(ctx context.Context, key string, metadata T, timeout time.Duration) error {
 	expiresAt := time.Now().Add(timeout)
-	data, err := marshalPayload(payload[T]{
+
+	stored := map[string]string{}
+	tracenats.InjectMap(
+		ctx,
+		stored,
+	)
+
+	entry := payload[T]{
 		ExpiresAt: expiresAt.UnixNano(),
 		Metadata:  metadata,
-	})
+	}
+	if len(stored) > 0 {
+		entry.Trace = stored
+	}
+
+	data, err := marshalPayload(entry)
 	if err != nil {
 		ta.logger.Error().Err(err).Str("key", key).Msg("failed to marshal payload")
 		return err
@@ -233,6 +250,7 @@ func (ta *TimedActor[T]) Hold(ctx context.Context, key string) error {
 	holdPayload := payload[T]{
 		ExpiresAt: holdExpiry.UnixNano(),
 		Metadata:  originalPayload.Metadata,
+		Trace:     originalPayload.Trace,
 	}
 	holdData, err := marshalPayload(holdPayload)
 	if err != nil {
@@ -577,6 +595,10 @@ func (ta *TimedActor[T]) handleWatchEntry(entry jetstream.KeyValueEntry) {
 		delay = 0
 	}
 
+	ta.rememberTrace(
+		key,
+		p.Trace,
+	)
 	ta.scheduleTimer(key, rev, delay, p.Metadata)
 }
 
@@ -675,9 +697,21 @@ func (ta *TimedActor[T]) fireMatchingCallbacks(key string, metadata T) {
 	copy(subs, ta.subscribers)
 	ta.mu.Unlock()
 
+	spanCtx, span := startTimerSpan(
+		key,
+		ta.takeTrace(key),
+	)
+	defer span.End()
+
+	callbackCtx := timerCallbackContext(
+		ta.ctx,
+		spanCtx,
+		span,
+	)
+
 	for _, sub := range subs {
 		if sub.Match == nil || sub.Match(metadata) {
-			sub.Callback(ta.ctx, key, metadata)
+			sub.Callback(callbackCtx, key, metadata)
 		}
 	}
 }
@@ -731,8 +765,16 @@ func (ta *TimedActor[T]) rescanOverdueTimers() {
 				Str("key", key).
 				Time("expires_at", expiresAt).
 				Msg("rescan found overdue key, attempting callback")
+			ta.rememberTrace(
+				key,
+				p.Trace,
+			)
 			ta.tryFireCallback(key, entry.Revision(), p.Metadata)
 		} else {
+			ta.rememberTrace(
+				key,
+				p.Trace,
+			)
 			// Key is not yet expired but not tracked — re-schedule.
 			ta.scheduleTimer(key, entry.Revision(), time.Until(expiresAt), p.Metadata)
 		}

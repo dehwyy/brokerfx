@@ -4,6 +4,7 @@ import (
 	"context"
 
 	cryptov1 "github.com/dehwyy/brokerfx/pkg/crypto/v1"
+	tracenats "github.com/dehwyy/tracerfx/pkg/tracer/delivery/nats"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -35,6 +36,11 @@ func (p *Producer) message(
 			cfg.msgID,
 		)
 	}
+
+	tracenats.InjectHeader(
+		ctx,
+		msg.Header,
+	)
 
 	for _, mw := range p.beforePublishMiddleware {
 		mw(

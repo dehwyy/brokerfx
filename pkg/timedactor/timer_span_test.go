@@ -18,18 +18,61 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
+type endNotifier struct {
+	name  string
+	ended chan struct{}
+}
+
+func (e *endNotifier) OnStart(_ context.Context, _ sdktrace.ReadWriteSpan) {}
+
+func (e *endNotifier) OnEnd(span sdktrace.ReadOnlySpan) {
+	if span.Name() != e.name {
+		return
+	}
+	select {
+	case e.ended <- struct{}{}:
+	default:
+	}
+}
+
+func (e *endNotifier) Shutdown(_ context.Context) error {
+	return nil
+}
+
+func (e *endNotifier) ForceFlush(_ context.Context) error {
+	return nil
+}
+
 func recordTimerSpans(t *testing.T) *tracetest.SpanRecorder {
 	t.Helper()
 
+	recorder, _ := recordTimerSpansWithEnd(t)
+
+	return recorder
+}
+
+func recordTimerSpansWithEnd(t *testing.T) (*tracetest.SpanRecorder, <-chan struct{}) {
+	t.Helper()
+
 	recorder := tracetest.NewSpanRecorder()
-	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder))
+	notifier := &endNotifier{
+		name: "timer.fire",
+		ended: make(
+			chan struct{},
+			16,
+		),
+	}
+	provider := sdktrace.NewTracerProvider(
+		sdktrace.WithSpanProcessor(recorder),
+		sdktrace.WithSpanProcessor(notifier),
+	)
 	previous := otel.GetTracerProvider()
 	otel.SetTracerProvider(provider)
 	t.Cleanup(func() {
 		otel.SetTracerProvider(previous)
 	})
 
-	return recorder
+	return recorder, notifier.ended
 }
 
 func schedulerContext(t *testing.T) (context.Context, trace.SpanContext) {
@@ -264,7 +307,7 @@ func storedTrace(t *testing.T) (map[string]string, trace.SpanContext) {
 }
 
 func TestTimerSpanFromWatchedPayload(t *testing.T) {
-	recorder := recordTimerSpans(t)
+	recorder, spanEnded := recordTimerSpansWithEnd(t)
 	stored, scheduler := storedTrace(t)
 
 	actor, cancel := newTestActor(&mockKV{
@@ -309,6 +352,12 @@ func TestTimerSpanFromWatchedPayload(t *testing.T) {
 			"baggage pl.tx_id: want tx-77 got %q",
 			got.txID,
 		)
+	}
+
+	select {
+	case <-spanEnded:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("timer.fire span did not end")
 	}
 
 	var span sdktrace.ReadOnlySpan

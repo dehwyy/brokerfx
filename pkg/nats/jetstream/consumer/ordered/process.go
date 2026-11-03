@@ -3,6 +3,9 @@ package ordered
 import (
 	"context"
 	"errors"
+	"sync/atomic"
+
+	"github.com/dehwyy/brokerfx/pkg/nats/jetstream/consumer/internal/itemctx"
 
 	tracenats "github.com/dehwyy/tracerfx/pkg/tracer/delivery/nats"
 	"github.com/nats-io/nats.go/jetstream"
@@ -11,6 +14,17 @@ import (
 )
 
 var errHandlerPanic = errors.New("panic")
+
+func markCaughtUp(msg jetstream.Msg, caughtUp *atomic.Bool) {
+	meta, err := msg.Metadata()
+	if err != nil || meta == nil {
+		return
+	}
+
+	if meta.NumPending == 0 {
+		caughtUp.Store(true)
+	}
+}
 
 func hasTraceContext(msg jetstream.Msg) bool {
 	extracted, err := tracenats.ExtractTraceContext(
@@ -24,7 +38,12 @@ func hasTraceContext(msg jetstream.Msg) bool {
 	return trace.SpanContextFromContext(extracted).IsValid()
 }
 
-func process(loopCtx context.Context, msg jetstream.Msg, opts Opts) {
+func process(loopCtx context.Context, msg jetstream.Msg, opts Opts, caughtUp *atomic.Bool) {
+	defer markCaughtUp(
+		msg,
+		caughtUp,
+	)
+
 	ctx := loopCtx
 
 	for _, mw := range opts.BeforeHandlerMiddleware {
@@ -46,7 +65,7 @@ func process(loopCtx context.Context, msg jetstream.Msg, opts Opts) {
 	}
 
 	var span trace.Span
-	if hasTraceContext(msg) {
+	if caughtUp.Load() && hasTraceContext(msg) {
 		ctx, span = tracenats.StartConsumer(
 			ctx,
 			msg.Subject(),
@@ -54,6 +73,11 @@ func process(loopCtx context.Context, msg jetstream.Msg, opts Opts) {
 			streamAttributes(msg)...,
 		)
 		defer span.End()
+	} else {
+		ctx = itemctx.WithBaggage(
+			ctx,
+			msg.Headers(),
+		)
 	}
 
 	defer func() {

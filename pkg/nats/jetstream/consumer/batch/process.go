@@ -18,11 +18,22 @@ func (c *Consumer) processBatch(
 		ctx,
 		msgs,
 	)
+	spans := startItemSpans(
+		span,
+		msgs,
+	)
+	settleCtx := withItemSpans(
+		spanCtx,
+		spans,
+	)
 	healthy := false
+	var tally SettleEvent
 	defer func() {
+		spans.endUnsettled()
 		endBatchSpan(
 			span,
 			healthy,
+			tally.failed(),
 		)
 	}()
 
@@ -31,15 +42,15 @@ func (c *Consumer) processBatch(
 		msgs,
 	)
 	if !completed {
-		c.isolate(
-			spanCtx,
+		tally = c.isolate(
+			settleCtx,
 			msgs,
 		)
 		return
 	}
 
-	c.settle(
-		spanCtx,
+	tally = c.settle(
+		settleCtx,
 		msgs,
 		results,
 	)

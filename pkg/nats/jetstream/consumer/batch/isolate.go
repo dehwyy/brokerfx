@@ -10,9 +10,15 @@ import (
 func (c *Consumer) isolate(
 	ctx context.Context,
 	msgs []jetstream.Msg,
-) {
-	for _, msg := range msgs {
+) SettleEvent {
+	var tally SettleEvent
+	spans := itemSpansFrom(ctx)
+	for i, msg := range msgs {
 		if isSettled(msg) {
+			spans.end(
+				i,
+				settledAck,
+			)
 			continue
 		}
 
@@ -28,16 +34,30 @@ func (c *Consumer) isolate(
 				Nak(ErrHandlerPanic),
 				0,
 			)
-			c.watch().OnSettle(SettleEvent{}.with(kind))
+			event := SettleEvent{}.with(kind)
+			c.watch().OnSettle(event)
+			tally = tally.plus(event)
+			spans.end(
+				i,
+				kind,
+			)
 			continue
 		}
 
-		c.settle(
-			ctx,
+		tally = tally.plus(c.settle(
+			withItemSpans(
+				ctx,
+				spans.slice(
+					i,
+					i+1,
+				),
+			),
 			single,
 			results,
-		)
+		))
 	}
+
+	return tally
 }
 
 func isSettled(msg jetstream.Msg) bool {

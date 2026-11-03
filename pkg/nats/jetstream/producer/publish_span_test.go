@@ -238,3 +238,75 @@ func TestProduceAsyncPublishSpanError(t *testing.T) {
 		t.Fatalf("span status must be Error")
 	}
 }
+
+func TestPublishSpanCarriesMessageIDWhenSet(t *testing.T) {
+	for _, async := range []bool{false, true} {
+		recorder := recordPublishSpans(t)
+		prod := New(Opts{JetStream: &publishJS{}})
+
+		var err error
+		if async {
+			err = prod.Produce(
+				context.Background(),
+				testEvent{},
+				WithMsgID("msg-42"),
+			)
+		} else {
+			err = prod.ProduceSync(
+				context.Background(),
+				testEvent{},
+				WithMsgID("msg-42"),
+			)
+		}
+		if err != nil {
+			t.Fatalf(
+				"publish: %v",
+				err,
+			)
+		}
+
+		got := ""
+		for _, kv := range publishSpan(
+			t,
+			recorder,
+		).Attributes() {
+			if string(kv.Key) == "messaging.message.id" {
+				got = kv.Value.AsString()
+			}
+		}
+		if got != "msg-42" {
+			t.Fatalf(
+				"async=%v messaging.message.id: %q",
+				async,
+				got,
+			)
+		}
+	}
+}
+
+func TestPublishSpanWithoutMessageIDHasNoAttribute(t *testing.T) {
+	recorder := recordPublishSpans(t)
+	prod := New(Opts{JetStream: &publishJS{}})
+
+	if err := prod.ProduceSync(
+		context.Background(),
+		testEvent{},
+	); err != nil {
+		t.Fatalf(
+			"ProduceSync: %v",
+			err,
+		)
+	}
+
+	for _, kv := range publishSpan(
+		t,
+		recorder,
+	).Attributes() {
+		if string(kv.Key) == "messaging.message.id" {
+			t.Fatalf(
+				"unexpected messaging.message.id: %v",
+				kv.Value,
+			)
+		}
+	}
+}

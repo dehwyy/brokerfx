@@ -443,3 +443,54 @@ func TestTimerHoldsNoStateAfterClear(t *testing.T) {
 		)
 	}
 }
+
+func TestTimerSpanNotStartedWithoutMatchingSubscriber(t *testing.T) {
+	recorder := recordTimerSpans(t)
+	ctx, _ := schedulerContext(t)
+
+	stored := addedPayload(
+		t,
+		ctx,
+	)
+
+	actor, cancel := newTestActor(&mockKV{})
+	defer cancel()
+
+	called := false
+	actor.subscribers = []subscriber[testMeta]{
+		{
+			Match: func(_ testMeta) bool {
+				return false
+			},
+			Callback: func(_ context.Context, _ string, _ testMeta) {
+				called = true
+			},
+		},
+	}
+	actor.fireMatchingCallbacks(
+		"key",
+		testMeta{},
+		stored.Trace,
+	)
+
+	if called {
+		t.Fatal("callback must not run without a match")
+	}
+	for _, span := range recorder.Ended() {
+		if span.Name() == "timer.fire" {
+			t.Fatal("no timer.fire span without a matching subscriber")
+		}
+	}
+
+	actor.subscribers = nil
+	actor.fireMatchingCallbacks(
+		"key",
+		testMeta{},
+		stored.Trace,
+	)
+	for _, span := range recorder.Ended() {
+		if span.Name() == "timer.fire" {
+			t.Fatal("no timer.fire span without subscribers")
+		}
+	}
+}

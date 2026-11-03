@@ -8,6 +8,7 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -62,13 +63,10 @@ func batchLinks(msgs []jetstream.Msg) []trace.Link {
 		len(msgs),
 	)
 	for _, msg := range msgs {
-		extracted, err := tracenats.ExtractTraceContext(
+		extracted := propagation.TraceContext{}.Extract(
 			context.Background(),
-			msg,
+			&tracenats.NATSHeaderCarrier{Header: msg.Headers()},
 		)
-		if err != nil {
-			continue
-		}
 
 		spanContext := trace.SpanContextFromContext(extracted)
 		if !spanContext.IsValid() {
@@ -84,7 +82,17 @@ func batchLinks(msgs []jetstream.Msg) []trace.Link {
 	return links
 }
 
-func endBatchSpan(span trace.Span, completed bool) {
+func endBatchSpan(span trace.Span, completed bool, failed int) {
+	if failed > 0 {
+		span.SetAttributes(attribute.Int(
+			"messaging.batch.failed_count",
+			failed,
+		))
+		span.SetStatus(
+			codes.Error,
+			"nack",
+		)
+	}
 	if !completed {
 		span.SetStatus(
 			codes.Error,

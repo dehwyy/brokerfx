@@ -247,3 +247,25 @@ func TestRelaySpanDoesNotMutateEvent(t *testing.T) {
 		t.Fatal("event headers mutated")
 	}
 }
+
+func TestRelaySpanRetryStartsNow(t *testing.T) {
+	fixture := newRelaySpanFixture(t)
+	createdAt := time.Now().Add(-time.Hour).Truncate(time.Microsecond)
+
+	_, end := startRelaySpan(relayEvent{
+		ID:        "event-1",
+		Topic:     "orders.created",
+		Headers:   fixture.headers,
+		CreatedAt: createdAt,
+		Attempts:  2,
+	})
+	end(nil)
+
+	span := fixture.relaySpan(t)
+	if time.Since(span.StartTime()) > time.Minute {
+		t.Fatalf(
+			"retry span must start now, started %v",
+			span.StartTime(),
+		)
+	}
+}

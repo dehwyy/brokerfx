@@ -14,8 +14,9 @@ func (c *Consumer) settle(
 	ctx context.Context,
 	msgs []jetstream.Msg,
 	results []Result,
-) {
+) SettleEvent {
 	var tally SettleEvent
+	spans := itemSpansFrom(ctx)
 	starts := frameStarts(msgs)
 	returns := make(
 		[]time.Duration,
@@ -46,9 +47,15 @@ func (c *Consumer) settle(
 			floor,
 		)
 		tally = tally.with(kind)
+		spans.end(
+			i,
+			kind,
+		)
 	}
 
 	c.watch().OnSettle(tally)
+
+	return tally
 }
 
 func frameStarts(msgs []jetstream.Msg) []int {

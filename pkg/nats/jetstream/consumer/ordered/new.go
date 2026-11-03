@@ -3,6 +3,7 @@ package ordered
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/rs/zerolog/log"
@@ -21,12 +22,15 @@ func New(ctx context.Context, opts Opts) (jetstream.ConsumeContext, error) {
 		return nil, err
 	}
 
-	if opts.OnAttached != nil {
-		info, infoErr := consumer.Info(ctx)
-		if infoErr != nil {
-			return nil, infoErr
-		}
+	info, err := consumer.Info(ctx)
+	if err != nil {
+		return nil, err
+	}
 
+	caughtUp := &atomic.Bool{}
+	caughtUp.Store(info.NumPending == 0)
+
+	if opts.OnAttached != nil {
 		opts.OnAttached(
 			ctx,
 			info,
@@ -39,6 +43,7 @@ func New(ctx context.Context, opts Opts) (jetstream.ConsumeContext, error) {
 				ctx,
 				msg,
 				opts,
+				caughtUp,
 			)
 		},
 		jetstream.ConsumeErrHandler(

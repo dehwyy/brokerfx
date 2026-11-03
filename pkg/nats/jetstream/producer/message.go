@@ -37,6 +37,11 @@ func (p *Producer) message(
 		)
 	}
 
+	annotatePublishSpan(
+		ctx,
+		cfg.msgID,
+	)
+
 	tracenats.InjectHeader(
 		ctx,
 		msg.Header,

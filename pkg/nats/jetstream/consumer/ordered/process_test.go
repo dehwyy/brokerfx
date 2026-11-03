@@ -3,12 +3,14 @@ package ordered
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"testing"
 
 	"github.com/dehwyy/brokerfx/pkg/nats/jetstream/consumer/middleware"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/baggage"
 	"go.opentelemetry.io/otel/codes"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
@@ -62,6 +64,7 @@ func TestOrderedSpanOnlyWithContext(t *testing.T) {
 		context.Background(),
 		&fakeMsg{headers: nats.Header{}},
 		opts,
+		caughtUpFlag(true),
 	)
 	if calls != 1 {
 		t.Fatalf(
@@ -84,6 +87,7 @@ func TestOrderedSpanOnlyWithContext(t *testing.T) {
 			},
 		},
 		opts,
+		caughtUpFlag(true),
 	)
 	if calls != 2 {
 		t.Fatalf(
@@ -123,6 +127,7 @@ func TestOrderedHandlerErrorContinues(t *testing.T) {
 			context.Background(),
 			&fakeMsg{headers: nats.Header{}},
 			opts,
+			caughtUpFlag(true),
 		)
 	}
 	if calls != 3 {
@@ -151,6 +156,7 @@ func TestOrderedMiddlewareErrorSkipsMessage(t *testing.T) {
 		context.Background(),
 		&fakeMsg{headers: nats.Header{}},
 		opts,
+		caughtUpFlag(true),
 	)
 	if calls != 0 {
 		t.Fatalf("handler must not run after middleware error")
@@ -180,11 +186,13 @@ func TestOrderedRecoversHandlerPanic(t *testing.T) {
 		context.Background(),
 		msg,
 		opts,
+		caughtUpFlag(true),
 	)
 	process(
 		context.Background(),
 		msg,
 		opts,
+		caughtUpFlag(true),
 	)
 	if calls != 2 {
 		t.Fatalf(
@@ -228,6 +236,7 @@ func TestOrderedSpanCarriesStreamAttributes(t *testing.T) {
 				return nil
 			},
 		},
+		caughtUpFlag(true),
 	)
 
 	spans := recorder.Ended()
@@ -261,4 +270,121 @@ func (m *metaMsg) Metadata() (*jetstream.MsgMetadata, error) {
 			Stream: 42,
 		},
 	}, nil
+}
+
+func caughtUpFlag(value bool) *atomic.Bool {
+	flag := &atomic.Bool{}
+	flag.Store(value)
+
+	return flag
+}
+
+type pendingMsg struct {
+	fakeMsg
+
+	pending uint64
+}
+
+func (m *pendingMsg) Metadata() (*jetstream.MsgMetadata, error) {
+	return &jetstream.MsgMetadata{
+		Stream:     "SNAP",
+		NumPending: m.pending,
+	}, nil
+}
+
+func tracedMsg(pending uint64) *pendingMsg {
+	return &pendingMsg{
+		fakeMsg: fakeMsg{
+			headers: nats.Header{
+				"traceparent": []string{"00-" + testTraceID + "-" + testParentID + "-01"},
+				"baggage":     []string{"pl.tx_id=tx-9"},
+			},
+		},
+		pending: pending,
+	}
+}
+
+func TestOrderedReplayBeforeCatchUpHasNoSpans(t *testing.T) {
+	recorder := recordSpans(t)
+	caught := caughtUpFlag(false)
+
+	var seenTx []string
+	opts := Opts{
+		HandlerFunc: func(ctx context.Context, _ jetstream.Msg) error {
+			seenTx = append(
+				seenTx,
+				baggage.FromContext(ctx).Member("pl.tx_id").Value(),
+			)
+			return nil
+		},
+	}
+
+	for _, pending := range []uint64{5, 1, 0} {
+		process(
+			context.Background(),
+			tracedMsg(pending),
+			opts,
+			caught,
+		)
+	}
+
+	if len(recorder.Ended()) != 0 {
+		t.Fatalf(
+			"replay must not create spans, got %d",
+			len(recorder.Ended()),
+		)
+	}
+	if len(seenTx) != 3 || seenTx[0] != "tx-9" || seenTx[2] != "tx-9" {
+		t.Fatalf(
+			"handler ctx must carry filtered baggage: %v",
+			seenTx,
+		)
+	}
+	if !caught.Load() {
+		t.Fatal("caught up must be set after the message with zero pending")
+	}
+
+	process(
+		context.Background(),
+		tracedMsg(0),
+		opts,
+		caught,
+	)
+	if len(recorder.Ended()) != 1 {
+		t.Fatalf(
+			"live message after catch-up must get a span, got %d",
+			len(recorder.Ended()),
+		)
+	}
+}
+
+func TestOrderedBaggageWithoutTraceparentReachesHandler(t *testing.T) {
+	recorder := recordSpans(t)
+
+	var tx string
+	process(
+		context.Background(),
+		&fakeMsg{
+			headers: nats.Header{
+				"baggage": []string{"pl.tx_id=tx-3"},
+			},
+		},
+		Opts{
+			HandlerFunc: func(ctx context.Context, _ jetstream.Msg) error {
+				tx = baggage.FromContext(ctx).Member("pl.tx_id").Value()
+				return nil
+			},
+		},
+		caughtUpFlag(true),
+	)
+
+	if tx != "tx-3" {
+		t.Fatalf(
+			"baggage must reach handler, got %q",
+			tx,
+		)
+	}
+	if len(recorder.Ended()) != 0 {
+		t.Fatal("no span without traceparent")
+	}
 }

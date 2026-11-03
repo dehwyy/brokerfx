@@ -41,7 +41,7 @@ func startRelaySpan(event relayEvent) (map[string]string, func(error)) {
 			),
 		),
 	}
-	if !event.CreatedAt.IsZero() {
+	if event.Attempts == 0 && !event.CreatedAt.IsZero() {
 		options = append(
 			options,
 			trace.WithTimestamp(event.CreatedAt),

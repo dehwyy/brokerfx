@@ -21,6 +21,7 @@ type fakeConsumer struct {
 	info    *jetstream.ConsumerInfo
 	infoErr error
 	deliver bool
+	msgs    []jetstream.Msg
 }
 
 func (c *fakeConsumer) Info(_ context.Context) (*jetstream.ConsumerInfo, error) {
@@ -39,6 +40,9 @@ func (c *fakeConsumer) Consume(handler jetstream.MessageHandler, _ ...jetstream.
 	)
 	if c.deliver {
 		handler(&fakeMsg{headers: nats.Header{}})
+	}
+	for _, msg := range c.msgs {
+		handler(msg)
 	}
 
 	return &fakeConsumeContext{}, nil
@@ -178,10 +182,13 @@ func TestInfoErrorFailsNew(t *testing.T) {
 	}
 }
 
-func TestNoOnAttachedSkipsInfo(t *testing.T) {
+func TestInfoCalledBeforeConsumeWithoutOnAttached(t *testing.T) {
 	var events []string
 	js := &fakeJetStream{
-		consumer: &fakeConsumer{events: &events},
+		consumer: &fakeConsumer{
+			events: &events,
+			info:   &jetstream.ConsumerInfo{},
+		},
 	}
 
 	if _, err := New(
@@ -193,10 +200,84 @@ func TestNoOnAttachedSkipsInfo(t *testing.T) {
 			err,
 		)
 	}
-	if fmt.Sprint(events) != "[consume]" {
+	if fmt.Sprint(events) != "[info consume]" {
 		t.Fatalf(
-			"Info must not be called without OnAttached: %v",
+			"Info must be read before Consume: %v",
 			events,
+		)
+	}
+}
+
+func newCatchUpStream(pending uint64, msgs ...jetstream.Msg) *fakeJetStream {
+	var events []string
+
+	return &fakeJetStream{
+		consumer: &fakeConsumer{
+			events: &events,
+			info:   &jetstream.ConsumerInfo{NumPending: pending},
+			msgs:   msgs,
+		},
+	}
+}
+
+func startOrdered(t *testing.T, js *fakeJetStream) {
+	t.Helper()
+
+	_, err := New(
+		context.Background(),
+		Opts{
+			JetStream: js,
+			Stream:    "S",
+			HandlerFunc: func(_ context.Context, _ jetstream.Msg) error {
+				return nil
+			},
+		},
+	)
+	if err != nil {
+		t.Fatalf(
+			"New: %v",
+			err,
+		)
+	}
+}
+
+func TestNewEmptyStreamFirstLiveMessageGetsSpan(t *testing.T) {
+	recorder := recordSpans(t)
+
+	startOrdered(
+		t,
+		newCatchUpStream(
+			0,
+			tracedMsg(0),
+		),
+	)
+
+	if len(recorder.Ended()) != 1 {
+		t.Fatalf(
+			"empty stream: first live message must get a span, got %d",
+			len(recorder.Ended()),
+		)
+	}
+}
+
+func TestNewBacklogReplayHasNoSpansUntilCaughtUp(t *testing.T) {
+	recorder := recordSpans(t)
+
+	startOrdered(
+		t,
+		newCatchUpStream(
+			2,
+			tracedMsg(2),
+			tracedMsg(1),
+			tracedMsg(0),
+			tracedMsg(0),
+		),
+	)
+
+	if len(recorder.Ended()) != 1 {
+		t.Fatalf(
+			"only the message after catch-up gets a span, got %d",
+			len(recorder.Ended()),
 		)
 	}
 }

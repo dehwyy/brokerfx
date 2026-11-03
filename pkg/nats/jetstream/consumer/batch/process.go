@@ -14,22 +14,35 @@ func (c *Consumer) processBatch(
 	stopHeartbeat := c.heartbeat(msgs)
 	defer stopHeartbeat()
 
-	results, completed := c.runHandler(
+	spanCtx, span := startBatchSpan(
 		ctx,
+		msgs,
+	)
+
+	results, completed := c.runHandler(
+		spanCtx,
 		msgs,
 	)
 	if !completed {
 		c.isolate(
-			ctx,
+			spanCtx,
 			msgs,
+		)
+		endBatchSpan(
+			span,
+			false,
 		)
 		return
 	}
 
 	c.settle(
-		ctx,
+		spanCtx,
 		msgs,
 		results,
+	)
+	endBatchSpan(
+		span,
+		true,
 	)
 }
 

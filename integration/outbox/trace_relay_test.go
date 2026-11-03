@@ -44,63 +44,116 @@ func TestRelayPublishesTraceContext(t *testing.T) {
 		},
 	}
 	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			db := testenv.Postgres(t)
-			require.NoError(t, outbox.AutoMigrate(db))
+		t.Run(
+			tc.name,
+			func(t *testing.T) {
+				db := testenv.Postgres(t)
+				require.NoError(
+					t,
+					outbox.AutoMigrate(db),
+				)
 
-			js := testenv.NATS(t)
-			newStream(t, js, tc.stream, tc.subject)
+				js := testenv.NATS(t)
+				newStream(
+					t,
+					js,
+					tc.stream,
+					tc.subject,
+				)
 
-			cfg := outbox.Config{
-				Mode:            outbox.ModeUpdateAfterSend,
-				BatchSize:       10,
-				TickInterval:    time.Hour,
-				DeleteOlderThan: time.Hour,
-				StallThreshold:  5 * time.Minute,
-			}
-			if tc.batched {
-				cfg = batchedConfig(outbox.ModeUpdateAfterSend)
-			}
-			harness := testenv.NewRelayHarness(t, db, outbox.NewJetStreamProducer(js), cfg)
-
-			ctx, traceID := tracedSaveContext(t)
-			require.NoError(t, harness.Store.SaveMessage(
-				ctx,
-				outbox.Message{
-					Subject: tc.subject,
-					Payload: []byte("traced"),
-				},
-			))
-
-			harness.Start(t)
-			harness.Wake()
-
-			stream, err := js.Stream(context.Background(), tc.stream)
-			require.NoError(t, err)
-
-			var raw *jetstream.RawStreamMsg
-			require.Eventually(t, func() bool {
-				var getErr error
-				raw, getErr = stream.GetLastMsgForSubject(context.Background(), tc.subject)
-				return getErr == nil
-			}, 10*time.Second, 100*time.Millisecond)
-
-			var relaySpanID string
-			require.Eventually(t, func() bool {
-				for _, span := range recorder.Ended() {
-					if span.Name() == "outbox.relay" && hasDestination(span, tc.subject) {
-						relaySpanID = span.SpanContext().SpanID().String()
-						return true
-					}
+				cfg := outbox.Config{
+					Mode:            outbox.ModeUpdateAfterSend,
+					BatchSize:       10,
+					TickInterval:    time.Hour,
+					DeleteOlderThan: time.Hour,
+					StallThreshold:  5 * time.Minute,
 				}
-				return false
-			}, 10*time.Second, 50*time.Millisecond)
+				if tc.batched {
+					cfg = batchedConfig(outbox.ModeUpdateAfterSend)
+				}
+				harness := testenv.NewRelayHarness(
+					t,
+					db,
+					outbox.NewJetStreamProducer(js),
+					cfg,
+				)
 
-			traceparent := raw.Header.Get("traceparent")
-			require.Contains(t, traceparent, traceID)
-			require.Contains(t, traceparent, relaySpanID)
-			require.Contains(t, raw.Header.Get("baggage"), "pl.tx_id=tx-save")
-		})
+				ctx, traceID := tracedSaveContext(t)
+				require.NoError(
+					t,
+					harness.Store.SaveMessage(
+						ctx,
+						outbox.Message{
+							Subject: tc.subject,
+							Payload: []byte("traced"),
+						},
+					),
+				)
+
+				harness.Start(t)
+				harness.Wake()
+
+				stream, err := js.Stream(
+					context.Background(),
+					tc.stream,
+				)
+				require.NoError(
+					t,
+					err,
+				)
+
+				var raw *jetstream.RawStreamMsg
+				require.Eventually(
+					t,
+					func() bool {
+						var getErr error
+						raw, getErr = stream.GetLastMsgForSubject(
+							context.Background(),
+							tc.subject,
+						)
+						return getErr == nil
+					},
+					10*time.Second,
+					100*time.Millisecond,
+				)
+
+				var relaySpanID string
+				require.Eventually(
+					t,
+					func() bool {
+						for _, span := range recorder.Ended() {
+							if span.Name() == "outbox.relay" && hasDestination(
+								span,
+								tc.subject,
+							) {
+								relaySpanID = span.SpanContext().SpanID().String()
+								return true
+							}
+						}
+						return false
+					},
+					10*time.Second,
+					50*time.Millisecond,
+				)
+
+				traceparent := raw.Header.Get("traceparent")
+				require.Contains(
+					t,
+					traceparent,
+					traceID,
+				)
+				require.Contains(
+					t,
+					traceparent,
+					relaySpanID,
+				)
+				require.Contains(
+					t,
+					raw.Header.Get("baggage"),
+					"pl.tx_id=tx-save",
+				)
+			},
+		)
 	}
 }
 

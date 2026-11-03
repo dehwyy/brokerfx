@@ -540,7 +540,12 @@ func TestTryFireCallback_WinsRace(t *testing.T) {
 	})
 	actor.mu.Unlock()
 
-	actor.tryFireCallback("key", 1, testMeta{Type: "TEST_TYPE"})
+	actor.tryFireCallback(
+		"key",
+		1,
+		testMeta{Type: "TEST_TYPE"},
+		nil,
+	)
 	if !called.Load() {
 		t.Error("expected callback to be called")
 	}
@@ -562,7 +567,12 @@ func TestTryFireCallback_LosesRace(t *testing.T) {
 	})
 	actor.mu.Unlock()
 
-	actor.tryFireCallback("key", 1, testMeta{})
+	actor.tryFireCallback(
+		"key",
+		1,
+		testMeta{},
+		nil,
+	)
 	if called.Load() {
 		t.Error("callback should NOT be called on revision mismatch")
 	}
@@ -584,7 +594,12 @@ func TestTryFireCallback_KeyAlreadyDeleted(t *testing.T) {
 	})
 	actor.mu.Unlock()
 
-	actor.tryFireCallback("key", 1, testMeta{})
+	actor.tryFireCallback(
+		"key",
+		1,
+		testMeta{},
+		nil,
+	)
 	if called.Load() {
 		t.Error("callback should NOT be called when key is already deleted")
 	}
@@ -859,7 +874,13 @@ func TestStop_CancelsTimers(t *testing.T) {
 	actor, _ := newTestActor(kv)
 
 	// Manually schedule a timer.
-	actor.scheduleTimer("key", 1, time.Hour, testMeta{})
+	actor.scheduleTimer(
+		"key",
+		1,
+		time.Hour,
+		testMeta{},
+		nil,
+	)
 
 	actor.Stop()
 
@@ -1009,7 +1030,13 @@ func TestHold_InvalidatesAllTimers(t *testing.T) {
 	actor.mu.Unlock()
 
 	// Schedule a timer with rev=1 that expires in 50ms.
-	actor.scheduleTimer("key", 1, 50*time.Millisecond, testMeta{})
+	actor.scheduleTimer(
+		"key",
+		1,
+		50*time.Millisecond,
+		testMeta{},
+		nil,
+	)
 
 	// Hold the key — this bumps revision to 2.
 	holdCtx, holdCancel := context.WithCancel(context.Background())

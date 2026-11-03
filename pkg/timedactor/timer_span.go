@@ -57,26 +57,3 @@ func timerCallbackContext(
 		span,
 	)
 }
-
-func (ta *TimedActor[T]) rememberTrace(key string, stored map[string]string) {
-	if len(stored) == 0 {
-		ta.traces.Delete(key)
-		return
-	}
-
-	ta.traces.Store(
-		key,
-		stored,
-	)
-}
-
-func (ta *TimedActor[T]) takeTrace(key string) map[string]string {
-	value, ok := ta.traces.LoadAndDelete(key)
-	if !ok {
-		return nil
-	}
-
-	stored, _ := value.(map[string]string)
-
-	return stored
-}

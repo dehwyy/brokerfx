@@ -6,6 +6,7 @@ func (ta *TimedActor[T]) retryLater(
 	key string,
 	rev uint64,
 	metadata T,
+	stored map[string]string,
 ) {
 	if ta.config.RescanInterval <= 0 {
 		return
@@ -29,6 +30,7 @@ func (ta *TimedActor[T]) retryLater(
 				key,
 				rev,
 				metadata,
+				stored,
 			)
 		},
 	)

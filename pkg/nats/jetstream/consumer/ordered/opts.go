@@ -15,4 +15,5 @@ type Opts struct {
 	HandlerFunc             func(ctx context.Context, msg jetstream.Msg) error
 	BeforeHandlerMiddleware []middleware.Middleware
 	OnFatal                 func(error)
+	OnAttached              func(ctx context.Context, info *jetstream.ConsumerInfo)
 }

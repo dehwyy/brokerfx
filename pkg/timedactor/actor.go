@@ -59,8 +59,6 @@ type TimedActor[T any] struct {
 
 	// ctx is the root context for all background goroutines.
 	ctx context.Context
-
-	traces sync.Map
 }
 
 // subscriber represents a single callback registration bound to a metadata
@@ -139,8 +137,11 @@ func New[T any](deps Deps) (*TimedActor[T], error) {
 	rootCtx, cancel := context.WithCancel(context.Background())
 
 	return &TimedActor[T]{
-		kv:             kv,
-		logger:         log.With().Str("component", "timed-actor").Logger(),
+		kv: kv,
+		logger: log.With().Str(
+			"component",
+			"timed-actor",
+		).Logger(),
 		config:         cfg,
 		timers:         make(map[string]*time.Timer),
 		activeWatchers: make(map[string]struct{}),
@@ -595,16 +596,18 @@ func (ta *TimedActor[T]) handleWatchEntry(entry jetstream.KeyValueEntry) {
 		delay = 0
 	}
 
-	ta.rememberTrace(
+	ta.scheduleTimer(
 		key,
+		rev,
+		delay,
+		p.Metadata,
 		p.Trace,
 	)
-	ta.scheduleTimer(key, rev, delay, p.Metadata)
 }
 
 // scheduleTimer creates or replaces an in-memory timer for the given key.
 // When the timer fires, it attempts an atomic revision-guarded delete.
-func (ta *TimedActor[T]) scheduleTimer(key string, rev uint64, delay time.Duration, metadata T) {
+func (ta *TimedActor[T]) scheduleTimer(key string, rev uint64, delay time.Duration, metadata T, stored map[string]string) {
 	ta.mu.Lock()
 	defer ta.mu.Unlock()
 
@@ -614,7 +617,12 @@ func (ta *TimedActor[T]) scheduleTimer(key string, rev uint64, delay time.Durati
 	}
 
 	ta.timers[key] = time.AfterFunc(delay, func() {
-		ta.tryFireCallback(key, rev, metadata)
+		ta.tryFireCallback(
+			key,
+			rev,
+			metadata,
+			stored,
+		)
 	})
 
 	ta.logger.Debug().
@@ -643,7 +651,7 @@ func (ta *TimedActor[T]) scheduleTimer(key string, rev uint64, delay time.Durati
 // When a key is held (via Hold), the revision has already been bumped by the
 // CAS update, so this function's kv.Delete with the old revision will fail
 // with a revision mismatch — the callback is silently skipped.
-func (ta *TimedActor[T]) tryFireCallback(key string, rev uint64, metadata T) {
+func (ta *TimedActor[T]) tryFireCallback(key string, rev uint64, metadata T, stored map[string]string) {
 	// Clean up the in-memory timer reference regardless of outcome.
 	ta.mu.Lock()
 	delete(ta.timers, key)
@@ -678,6 +686,7 @@ func (ta *TimedActor[T]) tryFireCallback(key string, rev uint64, metadata T) {
 			key,
 			rev,
 			metadata,
+			stored,
 		)
 		return
 	}
@@ -685,13 +694,17 @@ func (ta *TimedActor[T]) tryFireCallback(key string, rev uint64, metadata T) {
 	// This replica successfully deleted the key — it "won" the race.
 	// Execute matching callbacks.
 	ta.logger.Info().Str("key", key).Uint64("rev", rev).Msg("won race, firing callbacks")
-	ta.fireMatchingCallbacks(key, metadata)
+	ta.fireMatchingCallbacks(
+		key,
+		metadata,
+		stored,
+	)
 }
 
 // fireMatchingCallbacks invokes all registered subscribers whose Match function
 // accepts the given metadata. If a subscriber has no Match function (nil), it
 // is treated as a wildcard and always invoked.
-func (ta *TimedActor[T]) fireMatchingCallbacks(key string, metadata T) {
+func (ta *TimedActor[T]) fireMatchingCallbacks(key string, metadata T, stored map[string]string) {
 	ta.mu.Lock()
 	subs := make([]subscriber[T], len(ta.subscribers))
 	copy(subs, ta.subscribers)
@@ -699,7 +712,7 @@ func (ta *TimedActor[T]) fireMatchingCallbacks(key string, metadata T) {
 
 	spanCtx, span := startTimerSpan(
 		key,
-		ta.takeTrace(key),
+		stored,
 	)
 	defer span.End()
 
@@ -711,7 +724,11 @@ func (ta *TimedActor[T]) fireMatchingCallbacks(key string, metadata T) {
 
 	for _, sub := range subs {
 		if sub.Match == nil || sub.Match(metadata) {
-			sub.Callback(callbackCtx, key, metadata)
+			sub.Callback(
+				callbackCtx,
+				key,
+				metadata,
+			)
 		}
 	}
 }
@@ -765,18 +782,21 @@ func (ta *TimedActor[T]) rescanOverdueTimers() {
 				Str("key", key).
 				Time("expires_at", expiresAt).
 				Msg("rescan found overdue key, attempting callback")
-			ta.rememberTrace(
+			ta.tryFireCallback(
 				key,
+				entry.Revision(),
+				p.Metadata,
 				p.Trace,
 			)
-			ta.tryFireCallback(key, entry.Revision(), p.Metadata)
 		} else {
-			ta.rememberTrace(
+			// Key is not yet expired but not tracked — re-schedule.
+			ta.scheduleTimer(
 				key,
+				entry.Revision(),
+				time.Until(expiresAt),
+				p.Metadata,
 				p.Trace,
 			)
-			// Key is not yet expired but not tracked — re-schedule.
-			ta.scheduleTimer(key, entry.Revision(), time.Until(expiresAt), p.Metadata)
 		}
 	}
 }

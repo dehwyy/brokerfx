@@ -141,7 +141,10 @@ func (panicAckMsg) Ack() error { panic("ack exploded") }
 
 func TestBatchSpanEndsOnceWhenSettlePanics(t *testing.T) {
 	recorder := recordBatchSpans(t)
-	msg := panicAckMsg{newMsg("a", 1)}
+	msg := panicAckMsg{newMsg(
+		"a",
+		1,
+	)}
 
 	consumer := testConsumer(
 		func(_ context.Context, msgs []jetstream.Msg) []Result {

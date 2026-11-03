@@ -43,14 +43,30 @@ func TestWithTraceHeadersAddsContext(t *testing.T) {
 		true,
 	)
 
-	if !strings.Contains(got["traceparent"], traceID) {
-		t.Fatalf("traceparent must carry trace id %s: %v", traceID, got)
+	if !strings.Contains(
+		got["traceparent"],
+		traceID,
+	) {
+		t.Fatalf(
+			"traceparent must carry trace id %s: %v",
+			traceID,
+			got,
+		)
 	}
-	if !strings.Contains(got["baggage"], "pl.tx_id=tx-42") {
-		t.Fatalf("baggage must carry pl.tx_id: %v", got)
+	if !strings.Contains(
+		got["baggage"],
+		"pl.tx_id=tx-42",
+	) {
+		t.Fatalf(
+			"baggage must carry pl.tx_id: %v",
+			got,
+		)
 	}
 	if got["X-Own"] != "1" {
-		t.Fatalf("existing headers must survive: %v", got)
+		t.Fatalf(
+			"existing headers must survive: %v",
+			got,
+		)
 	}
 }
 
@@ -65,7 +81,10 @@ func TestWithTraceHeadersDoesNotMutateInput(t *testing.T) {
 	)
 
 	if len(input) != 1 {
-		t.Fatalf("input must not be mutated: %v", input)
+		t.Fatalf(
+			"input must not be mutated: %v",
+			input,
+		)
 	}
 }
 
@@ -78,7 +97,10 @@ func TestWithTraceHeadersLegacySchemaSkips(t *testing.T) {
 		false,
 	)
 	if len(got) != 0 {
-		t.Fatalf("legacy schema must not get headers: %v", got)
+		t.Fatalf(
+			"legacy schema must not get headers: %v",
+			got,
+		)
 	}
 
 	if _, err := buildMessageRows(
@@ -87,7 +109,10 @@ func TestWithTraceHeadersLegacySchemaSkips(t *testing.T) {
 		false,
 		time.Now(),
 	); err != nil {
-		t.Fatalf("legacy schema must not fail: %v", err)
+		t.Fatalf(
+			"legacy schema must not fail: %v",
+			err,
+		)
 	}
 }
 
@@ -101,13 +126,25 @@ func TestWithTraceHeadersKeepsCallerValue(t *testing.T) {
 	)
 
 	if got["Traceparent"] != "x" {
-		t.Fatalf("caller value must be kept: %v", got)
+		t.Fatalf(
+			"caller value must be kept: %v",
+			got,
+		)
 	}
 	if _, ok := got["traceparent"]; ok {
-		t.Fatalf("lowercase key must not be added next to caller key: %v", got)
+		t.Fatalf(
+			"lowercase key must not be added next to caller key: %v",
+			got,
+		)
 	}
-	if !strings.Contains(got["baggage"], "pl.tx_id=tx-42") {
-		t.Fatalf("other keys still injected: %v", got)
+	if !strings.Contains(
+		got["baggage"],
+		"pl.tx_id=tx-42",
+	) {
+		t.Fatalf(
+			"other keys still injected: %v",
+			got,
+		)
 	}
 }
 
@@ -121,7 +158,10 @@ func TestWithTraceHeadersNoSpan(t *testing.T) {
 	)
 
 	if len(got) != 1 || got["X-Own"] != "1" {
-		t.Fatalf("input must pass through: %v", got)
+		t.Fatalf(
+			"input must pass through: %v",
+			got,
+		)
 	}
 
 	if withTraceHeaders(

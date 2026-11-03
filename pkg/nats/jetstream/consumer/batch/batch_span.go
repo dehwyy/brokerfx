@@ -56,7 +56,11 @@ func batchGroup(msgs []jetstream.Msg) string {
 }
 
 func batchLinks(msgs []jetstream.Msg) []trace.Link {
-	links := make([]trace.Link, 0, len(msgs))
+	links := make(
+		[]trace.Link,
+		0,
+		len(msgs),
+	)
 	for _, msg := range msgs {
 		extracted, err := tracenats.ExtractTraceContext(
 			context.Background(),

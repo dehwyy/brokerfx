@@ -73,6 +73,7 @@ func TestTryFireCallbackRetriesUnexpectedDeleteError(t *testing.T) {
 					"order.1",
 					3,
 					testMeta{},
+					nil,
 				)
 				time.Sleep(300 * time.Millisecond)
 
@@ -113,11 +114,13 @@ func TestRetryLaterKeepsNewerTimer(t *testing.T) {
 		9,
 		time.Hour,
 		testMeta{},
+		nil,
 	)
 	actor.retryLater(
 		"order.1",
 		3,
 		testMeta{},
+		nil,
 	)
 	time.Sleep(200 * time.Millisecond)
 

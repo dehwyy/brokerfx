@@ -253,6 +253,7 @@ func TestRemoveKeyPurgesWithTTLWhenEnabled(t *testing.T) {
 		"order.1",
 		7,
 		testMeta{},
+		nil,
 	)
 	if err := actor.Clear(
 		context.Background(),
@@ -304,6 +305,7 @@ func TestRemoveKeyPurgeLosesRaceSkipsCallback(t *testing.T) {
 		"order.1",
 		7,
 		testMeta{},
+		nil,
 	)
 	if fired.Load() != 0 {
 		t.Fatalf(

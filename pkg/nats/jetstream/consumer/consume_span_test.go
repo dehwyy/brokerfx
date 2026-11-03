@@ -118,11 +118,14 @@ func TestProcessContinuesTraceFromHeaders(t *testing.T) {
 
 	var handlerSpan trace.SpanContext
 	var txID string
-	process(msg, handlerOf2(func(ctx context.Context) error {
-		handlerSpan = trace.SpanContextFromContext(ctx)
-		txID = baggage.FromContext(ctx).Member("pl.tx_id").Value()
-		return nil
-	}))
+	process(
+		msg,
+		handlerOf2(func(ctx context.Context) error {
+			handlerSpan = trace.SpanContextFromContext(ctx)
+			txID = baggage.FromContext(ctx).Member("pl.tx_id").Value()
+			return nil
+		}),
+	)
 
 	span := oneConsumeSpan(
 		t,
@@ -207,10 +210,13 @@ func TestProcessContinuesTraceFromHeaders(t *testing.T) {
 
 func TestProcessRootWithoutHeaders(t *testing.T) {
 	recorder := recordSpans(t)
-	process(newTraceMsg(
-		nats.Header{},
-		1,
-	), handlerOf2(func(context.Context) error { return nil }))
+	process(
+		newTraceMsg(
+			nats.Header{},
+			1,
+		),
+		handlerOf2(func(context.Context) error { return nil }),
+	)
 
 	span := oneConsumeSpan(
 		t,
@@ -227,10 +233,13 @@ func TestProcessRootWithoutHeaders(t *testing.T) {
 func TestProcessRootOnMalformedTraceparent(t *testing.T) {
 	recorder := recordSpans(t)
 	headers := nats.Header{"traceparent": []string{"garbage"}}
-	process(newTraceMsg(
-		headers,
-		1,
-	), handlerOf2(func(context.Context) error { return nil }))
+	process(
+		newTraceMsg(
+			headers,
+			1,
+		),
+		handlerOf2(func(context.Context) error { return nil }),
+	)
 
 	span := oneConsumeSpan(
 		t,
@@ -292,7 +301,10 @@ func TestProcessHandlerErrorOnSpan(t *testing.T) {
 		tracedHeaders(),
 		3,
 	)
-	process(msg, handlerOf2(func(context.Context) error { return errors.New("boom") }))
+	process(
+		msg,
+		handlerOf2(func(context.Context) error { return errors.New("boom") }),
+	)
 
 	span := oneConsumeSpan(
 		t,
@@ -328,7 +340,10 @@ func TestProcessPanicMarksSpan(t *testing.T) {
 		tracedHeaders(),
 		1,
 	)
-	process(msg, handlerOf2(func(context.Context) error { panic("kaboom") }))
+	process(
+		msg,
+		handlerOf2(func(context.Context) error { panic("kaboom") }),
+	)
 
 	span := oneConsumeSpan(
 		t,

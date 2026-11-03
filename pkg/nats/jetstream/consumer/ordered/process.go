@@ -2,13 +2,15 @@ package ordered
 
 import (
 	"context"
+	"errors"
 
 	tracenats "github.com/dehwyy/tracerfx/pkg/tracer/delivery/nats"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/rs/zerolog/log"
-	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 )
+
+var errHandlerPanic = errors.New("panic")
 
 func hasTraceContext(msg jetstream.Msg) bool {
 	extracted, err := tracenats.ExtractTraceContext(
@@ -34,7 +36,10 @@ func process(loopCtx context.Context, msg jetstream.Msg, opts Opts) {
 		if err != nil {
 			log.Error().
 				Err(err).
-				Str("subject", msg.Subject()).
+				Str(
+					"subject",
+					msg.Subject(),
+				).
 				Msg("ordered consumer middleware failed, message skipped")
 			return
 		}
@@ -46,9 +51,30 @@ func process(loopCtx context.Context, msg jetstream.Msg, opts Opts) {
 			ctx,
 			msg.Subject(),
 			msg.Headers(),
+			streamAttributes(msg)...,
 		)
 		defer span.End()
 	}
+
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			log.Error().
+				Any(
+					"panic",
+					recovered,
+				).
+				Str(
+					"subject",
+					msg.Subject(),
+				).
+				Msg("ordered consumer handler panic")
+
+			failSpan(
+				span,
+				errHandlerPanic,
+			)
+		}
+	}()
 
 	if err := opts.HandlerFunc(
 		ctx,
@@ -56,15 +82,15 @@ func process(loopCtx context.Context, msg jetstream.Msg, opts Opts) {
 	); err != nil {
 		log.Error().
 			Err(err).
-			Str("subject", msg.Subject()).
+			Str(
+				"subject",
+				msg.Subject(),
+			).
 			Msg("ordered consumer handler failed")
 
-		if span != nil {
-			span.RecordError(err)
-			span.SetStatus(
-				codes.Error,
-				err.Error(),
-			)
-		}
+		failSpan(
+			span,
+			err,
+		)
 	}
 }

@@ -21,6 +21,18 @@ func New(ctx context.Context, opts Opts) (jetstream.ConsumeContext, error) {
 		return nil, err
 	}
 
+	if opts.OnAttached != nil {
+		info, infoErr := consumer.Info(ctx)
+		if infoErr != nil {
+			return nil, infoErr
+		}
+
+		opts.OnAttached(
+			ctx,
+			info,
+		)
+	}
+
 	return consumer.Consume(
 		func(msg jetstream.Msg) {
 			process(
@@ -31,21 +43,37 @@ func New(ctx context.Context, opts Opts) (jetstream.ConsumeContext, error) {
 		},
 		jetstream.ConsumeErrHandler(
 			func(_ jetstream.ConsumeContext, consumeErr error) {
+				if fatal(consumeErr) {
+					log.Error().
+						Err(consumeErr).
+						Str(
+							"stream",
+							opts.Stream,
+						).
+						Msg("ordered consumer fatal error")
+
+					if opts.OnFatal != nil {
+						opts.OnFatal(consumeErr)
+					}
+
+					return
+				}
+
 				log.Warn().
 					Err(consumeErr).
-					Str("stream", opts.Stream).
-					Msg("ordered consumer error")
-
-				if opts.OnFatal != nil && fatal(consumeErr) {
-					opts.OnFatal(consumeErr)
-				}
+					Str(
+						"stream",
+						opts.Stream,
+					).
+					Msg("ordered consumer error, recovering")
 			},
 		),
 	)
 }
 
 func fatal(err error) bool {
-	return errors.Is(err, jetstream.ErrConsumerDeleted) ||
-		errors.Is(err, jetstream.ErrConsumerNotFound) ||
-		errors.Is(err, jetstream.ErrStreamNotFound)
+	return errors.Is(
+		err,
+		jetstream.ErrStreamNotFound,
+	)
 }

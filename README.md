@@ -133,6 +133,7 @@ NATS connection factory with Uber fx lifecycle integration. Validates required c
 | `TLSCertFile` | `string` | | Path to client TLS certificate |
 | `TLSKeyFile` | `string` | | Path to client TLS key |
 | `TLSCAFile` | `string` | | Path to CA certificate |
+| `TLSHandshakeFirst` | `bool` | | Start TLS before the server INFO (server `handshake_first`); only with `EnabledTLS` |
 | `ConnName` | `string` | | Display name in NATS monitoring |
 | `MaxReconnects` | `int` | | Max reconnect attempts (-1 = unlimited) |
 | `ReconnectWait` | `time.Duration` | | Wait between reconnects |

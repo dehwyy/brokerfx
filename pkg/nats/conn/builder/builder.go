@@ -38,6 +38,14 @@ func (b *ConnBuilder) WithTLS(
 	return b
 }
 
+func (b *ConnBuilder) WithTLSHandshakeFirst() *ConnBuilder {
+	b.opts = append(
+		b.opts,
+		nats.TLSHandshakeFirst(),
+	)
+	return b
+}
+
 func (b *ConnBuilder) WithNkey(
 	seedKey string,
 ) *ConnBuilder {

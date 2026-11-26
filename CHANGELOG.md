@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.13.0
+
+- conn: `Opts.TLSHandshakeFirst` (default false) adds `nats.TLSHandshakeFirst()` when `EnabledTLS` is set, for servers with `handshake_first: true`. Without it such a server never sends INFO and the client times out. Other behaviour is the same as v0.12.0.
+
 ## v0.12.0
 
 - deps: `github.com/dehwyy/tracerfx v0.7.0`. otel is a direct dependency at exactly `v1.39.0` (`otel`, `otel/trace`; `otel/sdk` is test-only), so the otel minimum of consumers becomes v1.39.0. No flag: tracing is always on. With the global noop provider no span is recorded, but an incoming context is still passed through.

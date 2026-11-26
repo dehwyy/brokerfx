@@ -21,6 +21,7 @@ type Opts struct {
 	CAFile     string
 	ConnName   string
 	EnabledTLS bool
+	TLSHandshakeFirst bool
 	// RetryOnFailedConnect is kept for compatibility: the retry is always enabled.
 	RetryOnFailedConnect bool
 	// MaxReconnects: 0 and negative mean unlimited (-1); a positive value caps the attempts.
@@ -105,6 +106,9 @@ func New(opts Opts) func() (*nc.Conn, error) {
 
 		if opts.EnabledTLS {
 			connOptsBuilder.WithTLS(opts.CertFile, opts.KeyFile, opts.CAFile)
+			if opts.TLSHandshakeFirst {
+				connOptsBuilder.WithTLSHandshakeFirst()
+			}
 		}
 		connOptsBuilder.
 			WithRetryOnFailedConnect(true).
